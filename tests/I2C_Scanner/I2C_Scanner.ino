@@ -61,7 +61,7 @@ void loop()
   Serial.println(channel);
 
   select_i2cmux_channel(channel);
-  channel = (channel + 1) % 3;
+  channel = (channel + 1) % 8;
 
   delay(10);
  
