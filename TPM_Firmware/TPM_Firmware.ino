@@ -2,7 +2,7 @@
  * AMPTS FTA Firmware
  * Temperature and Pressure Monitoring (TPM) subsystem
  * 
- * Matt Ruffner, University of Kentucky 2021
+ * Matt Ruffner, University of Kentucky Fall 2021
  */
 
 #include <Wire.h>
@@ -10,20 +10,14 @@
 #include <Adafruit_I2CRegister.h>
 #include <FreeRTOS_SAMD21.h>
 #include <Adafruit_MCP9600.h>
+#include <SerialTransfer.h>
 #include <Honeywell_ABP.h>
 #include <semphr.h>
 
-
-
-#define NUM_TC_CHANNELS 18
-
-
-//#include <Mahony_DPEng.h>
-//#include <Madgwick_DPEng.h>
-
-// rtos delay helpers
-#include "delay_helpers.h"
-#include "pins.h" // TPM system pinouts
+#include "include/delay_helpers.h" // rtos delay helpers
+#include "include/config.h"        // project wide defs
+#include "include/packet.h"        // data packet defs
+#include "pins.h"                  // TPM system pinouts
 
 #define I2CMUX_ADDR (0x70) 
 
@@ -35,6 +29,8 @@
 // data line to CDH processor
 #define SERIAL_CDH Serial1
 
+// serial transfer object for sending data to CDH processor
+SerialTransfer myTransfer;
 
 
 // freertos task handles
@@ -42,10 +38,15 @@ TaskHandle_t Handle_mcpTask;
 TaskHandle_t Handle_prsTask;
 TaskHandle_t Handle_cdhTask;
 TaskHandle_t Handle_monitorTask;
+
 // freeRTOS semaphores
-SemaphoreHandle_t cdhSem; // data transmit to CDH semaphore
+SemaphoreHandle_t cdhSerialSem; // data transmit to CDH semaphore
 SemaphoreHandle_t dbSem; // serial debug logging (Serial)
 SemaphoreHandle_t i2c1Sem; // i2c port 1 access semaphore
+
+// freeRTOS queues
+QueueHandle_t qMcpData; // data queue for sending thermal data to CDH processor over serial
+QueueHandle_t qPrsData; // data queue for sending pressure data to CDH processor over serial
 
 // create Honeywell_ABP instances
 Honeywell_ABP ps1(0x38, 0, 103.4, "kpa");
@@ -63,7 +64,7 @@ const uint8_t MCP_ADDRS[6] = {0x62, 0x61, 0x60, 0x63, 0x64, 0x67};
 const uint8_t MCP_I2CMUX_CHANNELS[3] = {0, 1, 2};
 
 /**********************************************************************************
- * Pressure monitoring thread
+ * Temperature and heat flux monitoring thread
 */
 static void mcpThread( void *pvParameters )
 {
@@ -78,15 +79,15 @@ static void mcpThread( void *pvParameters )
   #endif
   
   while(1) {
-    //myDelayMs(1000);
 
+    // assign tc temps from MCP objects to local vars
     for( int i=0; i<NUM_TC_CHANNELS; i++ ){
       current_temps[i] = readMCP(i);
       myDelayMs(50);
     }
     
     #ifdef DEBUG
-    if( millis() - lastDebug > 1000 ){
+    if( xTaskGetTickCount() - lastDebug > 1000 ){
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
         // print tc temps over serial
         SERIAL.print("TC temps: ");
@@ -96,17 +97,25 @@ static void mcpThread( void *pvParameters )
         SERIAL.println();
         xSemaphoreGive( dbSem ); 
       }
-      lastDebug = millis();
+      lastDebug = xTaskGetTickCount();
     }
     #endif
     
-    // assign tc temps from MCP objects to local vars
+    // build data struct to send over serial
+    uint16_t sendSize = 0;
+    tc_t data;
+    data.t = xTaskGetTickCount();
+    for( int i=0; i<NUM_TC_CHANNELS; i++ ){
+      data.data[i] = current_temps[i];
+    }
     
     // check cdh serial acccess
-    if ( xSemaphoreTake( cdhSem, ( TickType_t ) 5 ) == pdTRUE ) {
+    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 100 ) == pdTRUE ) {
       // send TC data to CDH
-      
-      xSemaphoreGive( cdhSem );
+      uint8_t type = PTYPE_TMP;
+      sendSize = myTransfer.txObj(type, sendSize);
+      sendSize = myTransfer.txObj(data, sendSize); 
+      xSemaphoreGive( cdhSerialSem );
     }
       
     // but eh more blinks
@@ -167,11 +176,21 @@ static void prsThread( void *pvParameters )
     pressures[3] = ps4.pressure();
     pressures[4] = ps5.pressure();
     
+    // copy pressure data to struct to be sent
+    uint16_t sendSize = 0;
+    prs_t data;
+    data.t = xTaskGetTickCount();
+    for( int i=0; i<NUM_PRS_CHANNELS; i++ ){
+      data.data[i] = pressures[i];
+    }
+    
     // check rosserial publish semaphore wait 5 ticks if not available
-    if ( xSemaphoreTake( cdhSem, ( TickType_t ) 5 ) == pdTRUE ) {
+    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 5 ) == pdTRUE ) {
       // send temperature and pressure data over serial
-      
-      xSemaphoreGive( cdhSem );
+      uint8_t type = PTYPE_PRS;
+      sendSize = myTransfer.txObj(type, sendSize);
+      sendSize = myTransfer.txObj(data, sendSize); 
+      xSemaphoreGive( cdhSerialSem );
     }
       
     // but eh more blinks
@@ -180,11 +199,6 @@ static void prsThread( void *pvParameters )
   
   vTaskDelete( NULL );  
 }
-
-
-
-
-
 
 //*****************************************************************
 // Task will periodically print out useful information about the tasks running
@@ -361,6 +375,8 @@ void setup() {
   delay(3000);
   SERIAL.println("Starting..");
   
+  myTransfer.begin(SERIAL_CDH);
+  
   // status signal configuration
   ledToggle();
   
@@ -377,16 +393,17 @@ void setup() {
   for( int i=0; i<18; i++) {
     ok &= initMCP(i);
     delay(10);
+    ledToggle();
   }
   if (!ok) {
     SERIAL.println("failed to start all MCP devices");
   }
   
   // setup cdh serial port smphr
-  if ( cdhSem == NULL ) {
-    cdhSem = xSemaphoreCreateMutex();  // create mutex
-    if ( ( cdhSem ) != NULL )
-      xSemaphoreGive( ( cdhSem ) );  // make available
+  if ( cdhSerialSem == NULL ) {
+    cdhSerialSem = xSemaphoreCreateMutex();  // create mutex
+    if ( ( cdhSerialSem ) != NULL )
+      xSemaphoreGive( ( cdhSerialSem ) );  // make available
   }
   // setup debug serial log semaphore
   if ( dbSem == NULL ) {
@@ -401,9 +418,9 @@ void setup() {
       xSemaphoreGive( ( i2c1Sem ) );  // make available
   }
   
+  
   xTaskCreate(mcpThread, "MCP9600 Conversion", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_mcpTask);
   xTaskCreate(prsThread, "Pressure Sensing", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_prsTask);
-  //xTaskCreate(cdhThread, "Data Transmission", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_cdhTask);
   //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 3, &Handle_monitorTask);
   
   SERIAL.println("Created Tasks");
