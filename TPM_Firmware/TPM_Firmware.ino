@@ -110,7 +110,7 @@ static void mcpThread( void *pvParameters )
     }
     
     // check cdh serial acccess
-    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 100 ) == pdTRUE ) {
+    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 50 ) == pdTRUE ) {
       // send TC data to CDH
       uint8_t type = PTYPE_TMP;
       sendSize = myTransfer.txObj(type, sendSize);
@@ -184,8 +184,8 @@ static void prsThread( void *pvParameters )
       data.data[i] = pressures[i];
     }
     
-    // check rosserial publish semaphore wait 5 ticks if not available
-    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 5 ) == pdTRUE ) {
+    // send pressure packet to cdh
+    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 50 ) == pdTRUE ) {
       // send temperature and pressure data over serial
       uint8_t type = PTYPE_PRS;
       sendSize = myTransfer.txObj(type, sendSize);
@@ -367,13 +367,15 @@ void select_i2cmux_channel(uint8_t c)
 }
 
 /**********************************************************************************
- * Pressure monitoring thread
+ * Main setup
 */
 void setup() {
   SERIAL.begin(115200);
   SERIAL_CDH.begin(115200);
   delay(3000);
   SERIAL.println("Starting..");
+  
+  pinMode(SCHED_CTRL, INPUT);
   
   myTransfer.begin(SERIAL_CDH);
   
@@ -423,7 +425,16 @@ void setup() {
   xTaskCreate(prsThread, "Pressure Sensing", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_prsTask);
   //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 3, &Handle_monitorTask);
   
-  SERIAL.println("Created Tasks");
+  SERIAL.println("Created Tasks, waiting for signal from CDH to start scheduler");
+  
+  // blink to signify waiting
+  // TODO: make this better so it breaks immediately
+  while( digitalRead(SCHED_CTRL) == LOW ) {
+    digitalWrite(PIN_LED, HIGH);
+    delay(10);
+    digitalWrite(PIN_LED, LOW);
+    delay(10);
+  }
 
   // Start the RTOS, this function will never return and will schedule the tasks.
   vTaskStartScheduler();
@@ -437,5 +448,6 @@ void setup() {
 }
 
 void loop() {
+  // tasks!
 }
 

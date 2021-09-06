@@ -2,3 +2,5 @@
 
 #define LED_ACT 13
 
+#define SCHED_CTRL 12
+

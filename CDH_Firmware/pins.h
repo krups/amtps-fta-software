@@ -1,12 +1,10 @@
 #ifndef CDHPINS_H
 #define CDHPINS_H
 
-#define GPS_RX 6
-#define GPS_TX 5
+#define PIN_SD_CS                 19 
 
-#define IRD_RX A2
-#define IRD_TX A3
+#define PIN_TPM_SCHEDULER_CTRL    18
 
-#define LED_ACT 13
+#define PIN_NEOPIXEL              8 // on feather m4 epress
 
 #endif
