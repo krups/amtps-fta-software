@@ -177,7 +177,6 @@ static void prsThread( void *pvParameters )
     pressures[4] = ps5.pressure();
     
     // copy pressure data to struct to be sent
-    uint16_t sendSize = 0;
     prs_t data;
     data.t = xTaskGetTickCount();
     for( int i=0; i<NUM_PRS_CHANNELS; i++ ){
@@ -188,8 +187,10 @@ static void prsThread( void *pvParameters )
     if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 50 ) == pdTRUE ) {
       // send temperature and pressure data over serial
       uint8_t type = PTYPE_PRS;
+      uint16_t sendSize = 0;
       sendSize = myTransfer.txObj(type, sendSize);
       sendSize = myTransfer.txObj(data, sendSize); 
+      myTransfer.sendData(sendSize);
       xSemaphoreGive( cdhSerialSem );
     }
       

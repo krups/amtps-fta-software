@@ -366,7 +366,7 @@ static void irdThread( void *pvParameters )
     
     // 
     // IS TIT TIME TO SEND A PACKKAGE??
-    if( xTaskGetTickCount() - lastPacketSend > IRIDIUM_PACKET_PERIOD ){
+    if( xTaskGetTickCount() - lastPacketSend > IRIDIUM_PACKET_PERIOD && (mSq > 0) ){
       
       irerr = modem.sendSBDText(buf);
             
@@ -427,7 +427,7 @@ static void tpmThread( void *pvParameters )
       // HOPEFULLY each instance of 'available' > 1 will correspond to the one byte of type data 
       // followed by the full packet of actual data we want...
       // .....
-      if( myTransfer.available() > 1){
+      if( myTransfer.available() ){
         uint16_t recSize = 0;
         uint8_t type; // what type of data is being received
         recSize = myTransfer.rxObj(type, recSize);
