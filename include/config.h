@@ -1,10 +1,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#define DEBUG 1 // usb serial debug switch
-
-#define IRIDIUM_PACKET_PERIOD 60 // send a packet every minute
-#define CHECK_SIGNAL_PERIOD   5 // seconds
+#define IRIDIUM_PACKET_PERIOD 60000 // send a packet every minute
+#define CHECK_SIGNAL_PERIOD   5000 // seconds
 #define DIAGNOSTICS false// Change this to see diagnostics
 #define SBD_TX_SZ 340
 

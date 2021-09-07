@@ -102,7 +102,6 @@ static void mcpThread( void *pvParameters )
     #endif
     
     // build data struct to send over serial
-    uint16_t sendSize = 0;
     tc_t data;
     data.t = xTaskGetTickCount();
     for( int i=0; i<NUM_TC_CHANNELS; i++ ){
@@ -110,11 +109,13 @@ static void mcpThread( void *pvParameters )
     }
     
     // check cdh serial acccess
-    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 50 ) == pdTRUE ) {
+    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 100 ) == pdTRUE ) {
       // send TC data to CDH
+      uint16_t sendSize = 0;
       uint8_t type = PTYPE_TMP;
       sendSize = myTransfer.txObj(type, sendSize);
-      sendSize = myTransfer.txObj(data, sendSize); 
+      sendSize = myTransfer.txObj(data, sendSize);
+      myTransfer.sendData(sendSize);
       xSemaphoreGive( cdhSerialSem );
     }
       
@@ -184,7 +185,7 @@ static void prsThread( void *pvParameters )
     }
     
     // send pressure packet to cdh
-    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 50 ) == pdTRUE ) {
+    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 100 ) == pdTRUE ) {
       // send temperature and pressure data over serial
       uint8_t type = PTYPE_PRS;
       uint16_t sendSize = 0;
@@ -372,7 +373,7 @@ void select_i2cmux_channel(uint8_t c)
 */
 void setup() {
   SERIAL.begin(115200);
-  SERIAL_CDH.begin(115200);
+  SERIAL_CDH.begin(34800);
   delay(3000);
   SERIAL.println("Starting..");
   

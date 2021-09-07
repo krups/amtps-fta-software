@@ -10,7 +10,7 @@
 #include <Adafruit_I2CDevice.h>
 #include <Adafruit_I2CRegister.h>
 #include <ArduinoNmeaParser.h>
-#include <FreeRTOS_SAMD21.h>
+#include <FreeRTOS_SAMD51.h>
 #include <SerialTransfer.h>
 #include <IridiumSBD.h>
 #include <semphr.h>
@@ -18,8 +18,7 @@
 #include <SPI.h>
 
 
-#define NUM_TC_CHANNELS 18
-
+#define DEBUG 1 // usb serial debug switch
 
 //#include <Mahony_DPEng.h>
 //#include <Madgwick_DPEng.h>
@@ -39,7 +38,6 @@
 // Serial transfer object for sending data to CDH processor
 SerialTransfer myTransfer;
 
-// TODO: SD card logging object
 
 // High G accel sensor object
 H3LIS100 accel = H3LIS100(12345);
@@ -84,17 +82,17 @@ IridiumSBD modem(SERIAL_IRD);
 void onRmcUpdate(nmea::RmcData const rmc)
 {
   #ifdef DEBUG
-  if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+  if ( xSemaphoreTake( dbSem, ( TickType_t ) 10 ) == pdTRUE ) {
     writeRmc(rmc, SERIAL);  
     xSemaphoreGive( dbSem );
   }
   #endif
 
-  if( xQueueSend( qRmcData, ( void * ) &rmc, ( TickType_t ) 100 ) != pdTRUE ) {
+  if( xQueueSend( qRmcData, ( void * ) &rmc, ( TickType_t ) 200 ) != pdTRUE ) {
     /* Failed to post the message, even after 100 ticks. */
     #ifdef DEBUG
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-      SERIAL.print("ERROR: failed to put rmc data into queue");
+      SERIAL.println("ERROR: failed to put rmc data into queue");
       xSemaphoreGive( dbSem );
     }
     #endif
@@ -138,7 +136,7 @@ void writeRmc(nmea::RmcData const rmc, Stream &pipe)
 // write formatted gps string to stream i.e. file or serial port
 void writeGga(nmea::GgaData const gga, Stream &pipe)
 {
-  pipe.print("GPS UPDATE: GGA ");
+  pipe.print("GGA ");
 
   if      (gga.source == nmea::GgaSource::GPS)     pipe.print("GPS");
   else if (gga.source == nmea::GgaSource::GLONASS) pipe.print("GLONASS");
@@ -185,11 +183,11 @@ void onGgaUpdate(nmea::GgaData const gga)
   }
   #endif
 
-  if( xQueueSend( qGgaData, ( void * ) &gga, ( TickType_t ) 100 ) != pdTRUE ) {
+  if( xQueueSend( qGgaData, ( void * ) &gga, ( TickType_t ) 200 ) != pdTRUE ) {
     /* Failed to post the message, even after 100 ticks. */
     #ifdef DEBUG
-    if ( xSemaphoreTake( dbSem, ( TickType_t ) 200 ) == pdTRUE ) {
-      SERIAL.print("ERROR: failed to put gga data into queue");
+    if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+      SERIAL.println("ERROR: failed to put gga data into queue");
       xSemaphoreGive( dbSem );
     }
     #endif
@@ -237,6 +235,7 @@ static void irdThread( void *pvParameters )
   char buf[200];
   int mSq = 0, irerr; // signal quality, modem operation return code
   unsigned long lastSignalCheck = 0, lastPacketSend = 0;
+  bool gpsAvailable = false;
   nmea::RmcData rmcData;
   
   sprintf(buf, "No GPS fix yet.");
@@ -247,7 +246,20 @@ static void irdThread( void *pvParameters )
     xSemaphoreGive( dbSem );
   }
   #endif
+
+  // enable modem
+  digitalWrite(PIN_IRIDIUM_EN, HIGH);
   
+  myDelayMs(5000); // give modem time to power up
+    
+  #ifdef DEBUG
+  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+    SERIAL.println("IRIDIUM: modem enabledd!");
+    xSemaphoreGive( dbSem );
+  }
+  #endif
+    
+    
   // init the iridium library and check signal strength
   irerr = modem.begin();
   while( irerr != ISBD_SUCCESS ){
@@ -455,7 +467,14 @@ static void tpmThread( void *pvParameters )
         /* Failed to post the message, even after 100 ticks. */
         #ifdef DEBUG
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-          SERIAL.print("ERROR: failed to put accel data into queue");
+          SERIAL.println("TPM: failed to put temperature data into queue");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+      } else {
+        #ifdef DEBUG
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+          SERIAL.println("TPM: got packet and put it in queue!");
           xSemaphoreGive( dbSem );
         }
         #endif
@@ -469,7 +488,14 @@ static void tpmThread( void *pvParameters )
         /* Failed to post the message, even after 100 ticks. */
         #ifdef DEBUG
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-          SERIAL.print("ERROR: failed to put accel data into queue");
+          SERIAL.println("ERROR: failed to put pressure data into queue");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+      } else {
+        #ifdef DEBUG
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+          SERIAL.println("TPM: added pressure packet to queue!!!!");
           xSemaphoreGive( dbSem );
         }
         #endif
@@ -516,9 +542,11 @@ static void accThread( void *pvParameters )
   while(1) {
     // goal of 50 hz logging rate, 
     // read from the high g accel and push a message to the data log queue
+    myDelayMs(1000);
+
     sensors_event_t event; 
     
-    if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 100 ) == pdTRUE ) {
+    if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 5 ) == pdTRUE ) {
       accel.getEvent(&event);
       xSemaphoreGive( i2c1Sem );
     }
@@ -531,18 +559,25 @@ static void accThread( void *pvParameters )
     data.data[2] = event.acceleration.z;
     
     #ifdef DEBUG
-    if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-      SERIAL.println("ACC: " + String(data.data[0]) + ", " + String(data.data[0]) + ", " + String(data.data[2]));
+    if ( xSemaphoreTake( dbSem, ( TickType_t ) 10 ) == pdTRUE ) {
+      SERIAL.println("ACC: " + String(data.data[0]) + ", " + String(data.data[1]) + ", " + String(data.data[2]));
       xSemaphoreGive( dbSem );
     }
     #endif
     
     // send the data to the data log queue
-    if( xQueueSend( qAccData, ( void * ) &data, ( TickType_t ) 100 ) != pdTRUE ) {
+    if( xQueueSend( qAccData, ( void * ) &data, ( TickType_t ) 5 ) != pdTRUE ) {
       /* Failed to post the message, even after 100 ticks. */
       #ifdef DEBUG
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-        SERIAL.print("ERROR: failed to put accel data into queue");
+        SERIAL.println("ERROR: failed to put accel data into queue");
+        xSemaphoreGive( dbSem );
+      }
+      #endif
+    } else {
+      #ifdef DEBUG
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+        SERIAL.println("ACC: put pkt in queue");
         xSemaphoreGive( dbSem );
       }
       #endif
@@ -573,7 +608,7 @@ static void imuThread( void *pvParameters )
 
   while(1) {
     // goal log rate of 100Hz for accelerometer and gyroscope data 
-    
+    myDelayMs(1000);
     // can log queue handle >100 message passes per second??
     
   }
@@ -598,6 +633,7 @@ static void logThread( void *pvParameters )
   imu_t imuData;
   nmea::GgaData ggaData;
   nmea::RmcData rmcData;
+  File logfile;
   
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -633,6 +669,8 @@ static void logThread( void *pvParameters )
     ready = true;
   }
   
+  while( !ready ); // stop thread if sd init failed
+  
   // CREATE UNIQUE FILE NAMES (UP TO 100)
   char filename[15];
   for( uint8_t j=0; j<NUM_LOG_FILES; j++ ){
@@ -654,7 +692,7 @@ static void logThread( void *pvParameters )
     
     // TC / HEAT FLUX
     if( qTmpData != NULL ) {
-      if( xQueueReceive( qTmpData, &tmpData, (TickType_t) 0 ) == pdPASS) {
+      if( xQueueReceive( qTmpData, &tmpData, (TickType_t) 5 ) == pdTRUE) {
          toLog[numToLog] = LOGID_TMP;
          numToLog++;
       }
@@ -662,7 +700,7 @@ static void logThread( void *pvParameters )
     
     // PRESSURE
     if( qPrsData != NULL ) {
-      if( xQueueReceive( qPrsData, &prsData, (TickType_t) 0 ) == pdPASS) {
+      if( xQueueReceive( qPrsData, &prsData, (TickType_t) 5 ) == pdTRUE) {
          toLog[numToLog] = LOGID_PRS;
          numToLog++;
       }
@@ -670,7 +708,7 @@ static void logThread( void *pvParameters )
     
     // HIGH G ACCELEROMETER
     if( qAccData != NULL ) {
-      if( xQueueReceive( qAccData, &accData, (TickType_t) 0 ) == pdPASS) {
+      if( xQueueReceive( qAccData, &accData, (TickType_t) 5 ) == pdTRUE) {
          toLog[numToLog] = LOGID_ACC;
          numToLog++;
       }
@@ -678,7 +716,7 @@ static void logThread( void *pvParameters )
     
     // IMU DATA
     if( qImuData != NULL ) {
-      if( xQueueReceive( qImuData, &imuData, (TickType_t) 0 ) == pdPASS) {
+      if( xQueueReceive( qImuData, &imuData, (TickType_t) 5 ) == pdTRUE) {
          toLog[numToLog] = LOGID_IMU;
          numToLog++;
       }
@@ -686,7 +724,7 @@ static void logThread( void *pvParameters )
     
     // GGA GPA DATA
     if( qGgaData != NULL ) {
-      if( xQueueReceive( qGgaData, &ggaData, (TickType_t) 0 ) == pdPASS) {
+      if( xQueueReceive( qGgaData, &ggaData, (TickType_t) 5 ) == pdTRUE) {
          toLog[numToLog] = LOGID_GGA;
          numToLog++;
       }
@@ -694,7 +732,7 @@ static void logThread( void *pvParameters )
     
     // RMC GPS DATA
     if( qRmcData != NULL ) {
-      if( xQueueReceive( qRmcData, &rmcData, (TickType_t) 0 ) == pdPASS) {
+      if( xQueueReceive( qRmcData, &rmcData, (TickType_t) 5 ) == pdTRUE) {
          toLog[numToLog] = LOGID_RMC;
          numToLog++;
       }
@@ -706,7 +744,7 @@ static void logThread( void *pvParameters )
     *********************/
     
     for( int i=0; i<numToLog; i++ ){
-      File logfile = SD.open(filenames[toLog[i]], FILE_WRITE);
+      logfile = SD.open(filenames[toLog[i]], FILE_WRITE);
       
       // logfile no good
       if( ! logfile ) {
@@ -724,50 +762,58 @@ static void logThread( void *pvParameters )
         
         // tc / heat flux
         if( toLog[i] == LOGID_TMP ){
-          String line = String(tmpData.t + ", ");
+          logfile.print(tmpData.t);
+          logfile.print(", ");
           for( int j=0; j<NUM_TC_CHANNELS; j++ ){
-            line += String(tmpData.data[j]);
+            logfile.print(tmpData.data[j]);
             if( j<NUM_TC_CHANNELS-1 ){
-              line += String(", ");
+              logfile.print(", ");
+            } else {
+              logfile.println();
             }
           }
-          logfile.println(line);
         }
         
         // pressure
         else if( toLog[i] == LOGID_PRS ){
-          String line = String(prsData.t + ", ");
+          logfile.print(prsData.t);
+          logfile.print(", ");
           for( int j=0; j<NUM_PRS_CHANNELS; j++ ){
-            line += String(prsData.data[j]);
+            logfile.print(prsData.data[j]);
             if( j<NUM_PRS_CHANNELS-1 ){
-              line += String(", ");
+              logfile.print(", ");
+            } else {
+              logfile.println();
             }
           }
-          logfile.println(line);
         }
         
         // high g accelerometer
         else if( toLog[i] == LOGID_ACC ){
-          String line = String(accData.t + ", ");
+          logfile.print(accData.t);
+          logfile.print(", ");
           for( int j=0; j<NUM_HIGHG_CHANNELS; j++ ){
-            line += String(accData.data[j]);
+            logfile.print(accData.data[j]);
             if( j<NUM_HIGHG_CHANNELS-1 ){
-              line += String(", ");
+              logfile.print(", ");
+            } else {
+              logfile.println();
             }
           }
-          logfile.println(line);
         } 
         
         // IMU
         else if( toLog[i] == LOGID_IMU ){
-          String line = String(imuData.t + ", ");
+          logfile.print(imuData.t);
+          logfile.print(", ");
           for( int j=0; j<NUM_IMU_CHANNELS; j++ ){
-            line += String(imuData.data[j]);
+            logfile.print(imuData.data[j]);
             if( j<NUM_IMU_CHANNELS-1 ){
-              line += String(", ");
+              logfile.print(", ");
+            } else {
+              logfile.println();
             }
           }
-          logfile.println(line);
         }
         
         // GGA GPS data
@@ -819,6 +865,8 @@ static void parThread( void *pvParameters )
   while(1) {
     // peek at gga and pressure queues to see if activation criteria have been met
     
+    myDelayMs(3000);
+    
     // PRESSURE
     if( qPrsData != NULL ) {
       if( xQueuePeek( qPrsData, &prsData, (TickType_t) 10 ) == pdPASS) {
@@ -826,6 +874,13 @@ static void parThread( void *pvParameters )
         // TODO: DECIDE ON WHICH PRESSURE CHANNEL TO USE
         // USING ONLY ONE CHANNEL FOR NOW
         prs = prsData.data[0];
+        
+        #ifdef DEBUG
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          Serial.println("parachute: peeked at pressure data!");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
       }
     }
     
@@ -865,13 +920,24 @@ void setup() {
   SERIAL.begin(115200); // init debug serial
   #endif
   
-  SERIAL_TPM.begin(115200); // init serial to tpm subsystem
+  SERIAL_TPM.begin(34800); // init serial to tpm subsystem
   SERIAL_GPS.begin(9600); // init gps serial
   SERIAL_IRD.begin(9600); // init iridium serial
+  
+  myTransfer.begin(SERIAL_TPM, false, SERIAL, 500);
+  myTransfer.begin(SERIAL_TPM);
   
   // scheduler control pin to TPM subsystem
   pinMode(PIN_TPM_SCHEDULER_CTRL, OUTPUT);
   digitalWrite(PIN_TPM_SCHEDULER_CTRL, LOW); // TPM scheduler starts when high
+
+  // modem power on/off control
+  pinMode(PIN_IRIDIUM_EN, OUTPUT);
+  digitalWrite(PIN_IRIDIUM_EN, LOW); // modem on when this output high
+
+  delay(3000);
+  
+  SERIAL.println("Starting...");
 
   // CREATE RTOS QUEUES 
   // temperature data queue
@@ -924,6 +990,7 @@ void setup() {
   }  
   // should take action if not all queues were created properly
   
+  SERIAL.println("Created queues...");
   
   // SETUP RTOS SEMAPHORES
   // setup cdh serial port smphr
@@ -957,21 +1024,20 @@ void setup() {
       xSemaphoreGive( ( irdSerSem ) );  // make available
   }
   
+  SERIAL.println("Created semaphores...");
+
+  
   /**************
   * CREATE TASKS
   **************/
-  xTaskCreate(tpmThread, "TPM Communication", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_tpmTask);
-  xTaskCreate(logThread, "SD Logging", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_logTask);
-  xTaskCreate(accThread, "High-g Accel", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_accTask);
-  xTaskCreate(imuThread, "9 Axis IMU", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_imuTask);
-  xTaskCreate(gpsThread, "GPS Reception", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_gpsTask);
-  xTaskCreate(irdThread, "9 Axis IMU", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_irdTask);
-  xTaskCreate(parThread, "Parachute Deployment", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_parTask);
+  xTaskCreate(logThread, "SD Logging", 1024, NULL, tskIDLE_PRIORITY + 3, &Handle_logTask);
+  xTaskCreate(accThread, "High-g Accel", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_accTask);
+  xTaskCreate(imuThread, "9 Axis IMU", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_imuTask);
+  xTaskCreate(gpsThread, "GPS Reception", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_gpsTask);
+  xTaskCreate(irdThread, "Iridium thread", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_irdTask);
+  xTaskCreate(parThread, "Parachute Deployment", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_parTask);
+  xTaskCreate(tpmThread, "TPM Communication", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_tpmTask);
   //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 3, &Handle_monitorTask);
-  
-  #if DEBUG
-  SERIAL.println("Created Tasks");
-  #endif
   
   // Start the RTOS, this function will never return and will schedule the tasks.
   // signal to the TPM subsystem to start the task scheduler so that xTaskGetTickCount() is 

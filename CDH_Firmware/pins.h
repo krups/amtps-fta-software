@@ -5,6 +5,8 @@
 
 #define PIN_TPM_SCHEDULER_CTRL    18
 
+#define PIN_IRIDIUM_EN            10
+
 #define PIN_NEOPIXEL              8 // on feather m4 epress
 
 #endif
