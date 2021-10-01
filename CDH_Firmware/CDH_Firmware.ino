@@ -23,6 +23,7 @@
 #include <utility/imumaths.h>
 
 #define DEBUG 1 // usb serial debug switch
+#define DEBUG_GPS 1
 
 //#include <Mahony_DPEng.h>
 //#include <Madgwick_DPEng.h>
@@ -136,13 +137,13 @@ IridiumSBD modem(SERIAL_IRD);
 
 void onRmcUpdate(nmea::RmcData const rmc)
 {
-  #ifdef DEBUG
-  if (rmc.is_valid) {
-    if ( xSemaphoreTake( dbSem, ( TickType_t ) 10 ) == pdTRUE ) {
+  #ifdef DEBUG_GPS
+  //if (rmc.is_valid) {
+    if ( xSemaphoreTake( dbSem, ( TickType_t ) 200 ) == pdTRUE ) {
       writeRmc(rmc, SERIAL);  
       xSemaphoreGive( dbSem );
     }
-  }
+  //}
   #endif
 
   if( xQueueSend( qRmcData, ( void * ) &rmc, ( TickType_t ) 200 ) != pdTRUE ) {
@@ -233,14 +234,14 @@ void writeGga(nmea::GgaData const gga, Stream &pipe)
 // this function takes the gps fix data and pushes it into the logging queue
 void onGgaUpdate(nmea::GgaData const gga)
 {
-  #ifdef DEBUG
+  /*#ifdef DEBUG_GPS
   if (gga.fix_quality != nmea::FixQuality::Invalid) {
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 200 ) == pdTRUE ) {
       writeGga(gga, SERIAL);
       xSemaphoreGive( dbSem );
     }
   }
-  #endif
+  #endif*/
 
   if( xQueueSend( qGgaData, ( void * ) &gga, ( TickType_t ) 200 ) != pdTRUE ) {
     /* Failed to post the message, even after 100 ticks. */
@@ -318,7 +319,7 @@ static void barThread( void *pvParameters )
         #endif
       }
     
-    #ifdef DEBUG
+    #ifdef DEBUG_VERBOSE
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
       Serial.print("pressure = "); Serial.print(sensorData.prs); Serial.println(" hPa");
       Serial.print("altitude = "); Serial.print(sensorData.alt); Serial.println(" m");
@@ -372,7 +373,8 @@ static void gpsThread( void *pvParameters )
 */
 static void irdThread( void *pvParameters )
 {
-  char buf[200];
+  bool fix_valid = false;
+  char buf[330];
   int mSq = 0, irerr; // signal quality, modem operation return code
   unsigned long lastSignalCheck = 0, lastPacketSend = 0;
   bool gpsAvailable = false;
@@ -513,7 +515,15 @@ static void irdThread( void *pvParameters )
       // if there was a fix in the queue, create a message in buf
       if( xQueuePeek( qRmcData, &rmcData, (TickType_t) 400 ) == pdPASS) {
 
+        /*#ifdef DEBUG
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        SERIAL.println("IRIDIUM: formatting packet");
+        xSemaphoreGive( dbSem );
+        }
+        #endif*/
+
         if( rmcData.is_valid ){
+          fix_valid = true;
           sprintf(buf, 
                   "%d:%d:%f.%f : LON %f ° | LAT %f ° | VEL %d  m/s | HEADING %f °",
                   rmcData.time_utc.hour, 
@@ -525,6 +535,7 @@ static void irdThread( void *pvParameters )
                   rmcData.speed,
                   rmcData.course);
         } else {
+          fix_valid = false;
           sprintf(buf, 
                   "%d:%d:%f.%f",
                   rmcData.time_utc.hour, 
@@ -532,12 +543,29 @@ static void irdThread( void *pvParameters )
                   rmcData.time_utc.second, 
                   rmcData.time_utc.microsecond);
         }
+
+        /*#ifdef DEBUG
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        SERIAL.println("IRIDIUM: done formatting packet");
+        xSemaphoreGive( dbSem );
+        }
+        #endif*/
+
+        
       } 
     }
     
     // 
     // IS TIT TIME TO SEND A PACKKAGE??
-    if( xTaskGetTickCount() - lastPacketSend > IRIDIUM_PACKET_PERIOD && (mSq > 0) ){
+    if( xTaskGetTickCount() - lastPacketSend > IRIDIUM_PACKET_PERIOD && (mSq > 0) && fix_valid ){
+      
+      #ifdef DEBUG
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+      SERIAL.println("IRIDIUM: sending packet");
+      xSemaphoreGive( dbSem );
+      }
+      #endif
+
       
       irerr = modem.sendSBDText(buf);
             
@@ -561,6 +589,8 @@ static void irdThread( void *pvParameters )
         lastPacketSend = xTaskGetTickCount();
       }
     }
+    
+    myDelayMs(1000);
     
   } // end task loop
   
@@ -788,10 +818,17 @@ static void imuThread( void *pvParameters )
     xSemaphoreGive( i2c1Sem );
   } 
   
+  #ifdef DEBUG
+  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+    Serial.println("SUCCESS: INITIALIZED 9 axis imu");
+    xSemaphoreGive( dbSem );
+  }
+  #endif
+  
   while(1) {
     // goal log rate of 100Hz for accelerometer and gyroscope data 
     // can log queue handle >100 message passes per second??
-    myDelayMs(10);
+    myDelayMs(100);
     
     // get data over i2c
     if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 10 ) == pdTRUE ) {  
@@ -1167,9 +1204,6 @@ static void parThread( void *pvParameters )
 /**********************************************************************************/
 void setup() {
 
-  pinPeripheral(19, PIO_SERCOM);
-  pinPeripheral(18, PIO_SERCOM);
-
   #if DEBUG
   SERIAL.begin(115200); // init debug serial
   #endif
@@ -1180,6 +1214,13 @@ void setup() {
   delay(10);
   SERIAL_IRD.begin(9600); // init iridium serial
   delay(10);
+  
+  
+  // Assign pins A2 & A3 SERCOM functionality
+  pinPeripheral(A2, PIO_SERCOM_ALT);
+  pinPeripheral(A3, PIO_SERCOM_ALT);
+  pinPeripheral(13, PIO_SERCOM);
+  pinPeripheral(12, PIO_SERCOM);
   
   myTransfer.begin(SERIAL_TPM, false, SERIAL, 500);
   myTransfer.begin(SERIAL_TPM);
