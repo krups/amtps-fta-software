@@ -427,7 +427,7 @@ void setup() {
   xTaskCreate(prsThread, "Pressure Sensing", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_prsTask);
   //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 3, &Handle_monitorTask);
   
-  SERIAL.println("Created Tasks, waiting for signal from CDH to start scheduler");
+  //SERIAL.println("Created Tasks, waiting for signal from CDH to start scheduler");
   
   // blink to signify waiting
   // TODO: make this better so it breaks immediately
