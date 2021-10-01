@@ -9,6 +9,7 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_I2CDevice.h>
 #include <Adafruit_I2CRegister.h>
+#include <Adafruit_MPL3115A2.h>
 #include <ArduinoNmeaParser.h>
 #include <FreeRTOS_SAMD51.h>
 #include <SerialTransfer.h>
@@ -16,7 +17,10 @@
 #include <semphr.h>
 #include <SD.h>
 #include <SPI.h>
+#include "wiring_private.h"
 
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
 
 #define DEBUG 1 // usb serial debug switch
 
@@ -29,19 +33,69 @@
 #include "include/packet.h"        // packet definitions
 #include "pins.h"                  // CDH system pinouts
 
+// Serial 2
+Uart Serial2( &sercom3, 13, 12, SERCOM_RX_PAD_1, UART_TX_PAD_0 ) ;
+void SERCOM3_0_Handler()
+{
+  Serial2.IrqHandler();
+}
+void SERCOM3_1_Handler()
+{
+  Serial2.IrqHandler();
+}
+void SERCOM3_2_Handler()
+{
+  Serial2.IrqHandler();
+}
+void SERCOM3_3_Handler()
+{
+  Serial2.IrqHandler();
+}
+
+// Serial3
+Uart Serial3 (&sercom4, A3, A2, SERCOM_RX_PAD_1, UART_TX_PAD_0);
+void SERCOM4_0_Handler()
+{
+  Serial3.IrqHandler();
+}
+void SERCOM4_1_Handler()
+{
+  Serial3.IrqHandler();
+}
+void SERCOM4_2_Handler()
+{
+  Serial3.IrqHandler();
+}
+void SERCOM4_3_Handler()
+{
+  Serial3.IrqHandler();
+}
+
+
 // debug serial
 #define SERIAL      Serial  // debug serial (USB) all uses should be conditional on DEBUG define
 #define SERIAL_TPM  Serial1 // to TPM subsystem
 #define SERIAL_GPS  Serial2 // to gps
 #define SERIAL_IRD  Serial3 // to iridium modem
 
-// Serial transfer object for sending data to CDH processor
+// Serial transfer object for receiving data from TPM processor
 SerialTransfer myTransfer;
-
 
 // High G accel sensor object
 H3LIS100 accel = H3LIS100(12345);
 
+// capsule internal barometric pressure object
+// and struct for passing data through queue
+Adafruit_MPL3115A2 baro;
+struct barSenseData {
+  float prs;
+  float alt;
+  float tmp;
+};
+
+// Check I2C device address and correct line below (by default address is 0x29 or 0x28)
+//                                   id, address
+Adafruit_BNO055 bno = Adafruit_BNO055(-1, 0x28);
 
 // freertos task handles
 TaskHandle_t Handle_tpmTask; // data receive from TPM subsystem task
@@ -51,6 +105,7 @@ TaskHandle_t Handle_imuTask; // 9 axis imu data collection task
 TaskHandle_t Handle_gpsTask; // gps data receive task
 TaskHandle_t Handle_irdTask; // iridium transmission task
 TaskHandle_t Handle_parTask; // parachute deployment task
+TaskHandle_t Handle_barTask;
 TaskHandle_t Handle_monitorTask; // debug running task stats over uart task
 
 // freeRTOS queues
@@ -60,6 +115,7 @@ QueueHandle_t qAccData; // high g accelerometer data to be logged
 QueueHandle_t qImuData; // 6 axis log g imu data to be logged
 QueueHandle_t qGgaData; // GGA GPS fix data to be logged
 QueueHandle_t qRmcData; // RMC GPS data to be logged
+QueueHandle_t qBarData; // barometric pressure data
 
 // freeRTOS semaphores
 SemaphoreHandle_t tpmSerSem; // data from CDH semaphore
@@ -78,13 +134,14 @@ ArduinoNmeaParser parser(onRmcUpdate, onGgaUpdate);
 // IRIDIUM MODEM OBJECT
 IridiumSBD modem(SERIAL_IRD);
 
-
 void onRmcUpdate(nmea::RmcData const rmc)
 {
   #ifdef DEBUG
-  if ( xSemaphoreTake( dbSem, ( TickType_t ) 10 ) == pdTRUE ) {
-    writeRmc(rmc, SERIAL);  
-    xSemaphoreGive( dbSem );
+  if (rmc.is_valid) {
+    if ( xSemaphoreTake( dbSem, ( TickType_t ) 10 ) == pdTRUE ) {
+      writeRmc(rmc, SERIAL);  
+      xSemaphoreGive( dbSem );
+    }
   }
   #endif
 
@@ -177,9 +234,11 @@ void writeGga(nmea::GgaData const gga, Stream &pipe)
 void onGgaUpdate(nmea::GgaData const gga)
 {
   #ifdef DEBUG
-  if ( xSemaphoreTake( dbSem, ( TickType_t ) 200 ) == pdTRUE ) {
-    writeGga(gga, SERIAL);
-    xSemaphoreGive( dbSem );
+  if (gga.fix_quality != nmea::FixQuality::Invalid) {
+    if ( xSemaphoreTake( dbSem, ( TickType_t ) 200 ) == pdTRUE ) {
+      writeGga(gga, SERIAL);
+      xSemaphoreGive( dbSem );
+    }
   }
   #endif
 
@@ -193,6 +252,86 @@ void onGgaUpdate(nmea::GgaData const gga)
     #endif
   }
 }
+
+/**********************************************************************************
+/**********************************************************************************
+/**********************************************************************************
+/**********************************************************************************
+ * barometric pressure monitoring thread
+*/
+static void barThread( void *pvParameters )
+{
+  bool init = false;
+  barSenseData sensorData;
+
+  #ifdef DEBUG
+  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+    Serial.println("Barometer thread started");
+    xSemaphoreGive( dbSem );
+  }
+  #endif
+
+  while (!init) {
+    myDelayMs(1000);
+    
+    if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 100 ) == pdTRUE ) {
+      // initialize barometer
+      if (baro.begin()) {
+        init = true;
+        baro.setSeaPressure(1013.26);
+
+      }      
+      xSemaphoreGive( i2c1Sem );
+    }
+  }
+  
+  #ifdef DEBUG
+  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+    Serial.println("Barometer initialized!");
+    xSemaphoreGive( dbSem );
+  }
+  #endif
+    
+  while(1) {
+  
+    if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 100 ) == pdTRUE ) {
+      sensorData.prs = baro.getPressure();
+      sensorData.alt = baro.getAltitude();
+      sensorData.tmp = baro.getTemperature();
+      xSemaphoreGive( i2c1Sem );
+    }
+  
+    if( xQueueSend( qBarData, ( void * ) &sensorData, ( TickType_t ) 100 ) != pdTRUE ) {
+        /* Failed to post the message, even after 100 ticks. */
+        #ifdef DEBUG
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+          SERIAL.println("BAR: failed to put sensor data into queue");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+      } else {
+        #ifdef TPM_PACKET_DEBUG
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+          SERIAL.println("BAR: added prs/alt/tmp packet to queue!");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+      }
+    
+    #ifdef DEBUG
+    if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+      Serial.print("pressure = "); Serial.print(sensorData.prs); Serial.println(" hPa");
+      Serial.print("altitude = "); Serial.print(sensorData.alt); Serial.println(" m");
+      Serial.print("temperature = "); Serial.print(sensorData.tmp); Serial.println(" C");
+      
+      xSemaphoreGive( dbSem );
+    }
+    #endif
+
+    myDelayMs(1000);
+  }
+}
+
 
 
 /**********************************************************************************
@@ -211,13 +350,14 @@ static void gpsThread( void *pvParameters )
   #endif
   
   while(1) {
-
     if ( xSemaphoreTake( gpsSerSem, ( TickType_t ) 100 ) == pdTRUE ) {
       while (SERIAL_GPS.available()) {
         parser.encode((char)SERIAL_GPS.read());
       }
       xSemaphoreGive( gpsSerSem );
     }
+    
+    taskYIELD();
   }
   
   vTaskDelete( NULL );  
@@ -252,16 +392,25 @@ static void irdThread( void *pvParameters )
   
   myDelayMs(5000); // give modem time to power up
     
-  #ifdef DEBUG
+    
+   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-    SERIAL.println("IRIDIUM: modem enabledd!");
+    Serial.println("Iridium thread: trying to start modem!/...");
     xSemaphoreGive( dbSem );
   }
   #endif
     
-    
   // init the iridium library and check signal strength
   irerr = modem.begin();
+  
+  #ifdef DEBUG
+  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+    SERIAL.println("IRIDIUM: called modem.begin()");
+    xSemaphoreGive( dbSem );
+  }
+  #endif
+    
+  
   while( irerr != ISBD_SUCCESS ){
     #ifdef DEBUG
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -280,7 +429,17 @@ static void irdThread( void *pvParameters )
     }
     
     irerr = modem.begin();
+    
+    myDelayMs(1000);
   }
+  
+  #ifdef DEBUG
+  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+    SERIAL.println("IRIDIUM: modem initialized!");
+    xSemaphoreGive( dbSem );
+  }
+  #endif
+    
   
   // Test the signal quality.
   // This returns a number between 0 and 5.
@@ -428,8 +587,11 @@ static void tpmThread( void *pvParameters )
   tc_t  tcData;
   prs_t prsData;
   
+  
   while(1) {
+    
     myDelayMs(10);
+    
     // acquire lock on serial port to TPM board
     if ( xSemaphoreTake( tpmSerSem, ( TickType_t ) 100 ) == pdTRUE ) {
       
@@ -472,9 +634,9 @@ static void tpmThread( void *pvParameters )
         }
         #endif
       } else {
-        #ifdef DEBUG
+        #ifdef TPM_PACKET_DEBUG
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-          SERIAL.println("TPM: got packet and put it in queue!");
+          SERIAL.println("TPM: added tc packet to queue!");
           xSemaphoreGive( dbSem );
         }
         #endif
@@ -493,7 +655,7 @@ static void tpmThread( void *pvParameters )
         }
         #endif
       } else {
-        #ifdef DEBUG
+        #ifdef TPM_PACKET_DEBUG
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
           SERIAL.println("TPM: added pressure packet to queue!!!!");
           xSemaphoreGive( dbSem );
@@ -540,9 +702,9 @@ static void accThread( void *pvParameters )
 
 
   while(1) {
-    // goal of 50 hz logging rate, 
+    // goal of 20 hz logging rate, 
     // read from the high g accel and push a message to the data log queue
-    myDelayMs(1000);
+    myDelayMs(49);
 
     sensors_event_t event; 
     
@@ -558,7 +720,7 @@ static void accThread( void *pvParameters )
     data.data[1] = event.acceleration.y;
     data.data[2] = event.acceleration.z;
     
-    #ifdef DEBUG
+    #ifdef ACC_DEBUG
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 10 ) == pdTRUE ) {
       SERIAL.println("ACC: " + String(data.data[0]) + ", " + String(data.data[1]) + ", " + String(data.data[2]));
       xSemaphoreGive( dbSem );
@@ -575,7 +737,7 @@ static void accThread( void *pvParameters )
       }
       #endif
     } else {
-      #ifdef DEBUG
+      #ifdef DEBUG_VERBOSE
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
         SERIAL.println("ACC: put pkt in queue");
         xSemaphoreGive( dbSem );
@@ -596,6 +758,9 @@ static void accThread( void *pvParameters )
 */
 static void imuThread( void *pvParameters )
 {
+  bool init = false;
+  imu::Vector<3> acc, gyr;
+  imu_t imuData;
 
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -604,12 +769,61 @@ static void imuThread( void *pvParameters )
   }
   #endif
   
-  // make sure the IMU is properly configured
-
+  // init imu
+  while (!init) {
+    myDelayMs(500);
+    if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 100 ) == pdTRUE ) {  
+      if (bno.begin()) {
+        init = true;
+      }      
+      xSemaphoreGive( i2c1Sem );
+    }
+  }
+  
+  // delay and set config data
+  myDelayMs(100);
+  if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 100 ) == pdTRUE ) {  
+    // set a setting 
+    bno.setExtCrystalUse(true);
+    xSemaphoreGive( i2c1Sem );
+  } 
+  
   while(1) {
     // goal log rate of 100Hz for accelerometer and gyroscope data 
-    myDelayMs(1000);
     // can log queue handle >100 message passes per second??
+    myDelayMs(10);
+    
+    // get data over i2c
+    if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 10 ) == pdTRUE ) {  
+      acc = bno.getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
+      gyr = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+      xSemaphoreGive( i2c1Sem );
+    } 
+    
+    imuData.data[0] = acc.x();
+    imuData.data[1] = acc.y();
+    imuData.data[2] = acc.z();
+    imuData.data[3] = gyr.x();
+    imuData.data[4] = gyr.y();
+    imuData.data[5] = gyr.z();
+    
+    // send the data to the data log queue
+    if( xQueueSend( qImuData, ( void * ) &imuData, ( TickType_t ) 5 ) != pdTRUE ) {
+      /* Failed to post the message, even after 5 ticks. */
+      #ifdef DEBUG
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+        SERIAL.println("ERROR: failed to put imu data into queue");
+        xSemaphoreGive( dbSem );
+      }
+      #endif
+    } else {
+      #ifdef DEBUG_VERBOSE
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+        SERIAL.println("IMU: put pkt in queue");
+        xSemaphoreGive( dbSem );
+      }
+      #endif
+    }
     
   }
   
@@ -633,6 +847,7 @@ static void logThread( void *pvParameters )
   imu_t imuData;
   nmea::GgaData ggaData;
   nmea::RmcData rmcData;
+  barSenseData barData;
   File logfile;
   
   #ifdef DEBUG
@@ -649,9 +864,10 @@ static void logThread( void *pvParameters )
   filenames[3] = LOGFILE3; // IMU
   filenames[4] = LOGFILE4; // GGA
   filenames[5] = LOGFILE5; // RMC
+  filenames[6] = LOGFILE6; // BAR
   
   // INIT CARD
-  if (!SD.begin(PIN_SD_CS)) {
+  while (!SD.begin(PIN_SD_CS)) {
     #if DEBUG
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
       Serial.println("ERROR: sd logging thread couldn't init sd card");
@@ -659,7 +875,9 @@ static void logThread( void *pvParameters )
     }
     #endif
     ready = false;
-  } else {
+    myDelayMs(1000);
+  } 
+  //else {
     #if DEBUG
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
       Serial.println("SD CARD INIT OK");
@@ -667,9 +885,8 @@ static void logThread( void *pvParameters )
     }
     #endif
     ready = true;
-  }
+  //}
   
-  while( !ready ); // stop thread if sd init failed
   
   // CREATE UNIQUE FILE NAMES (UP TO 100)
   char filename[15];
@@ -738,6 +955,13 @@ static void logThread( void *pvParameters )
       }
     }
     
+    // BAROMETER ALT/PRS/TMP DATA
+    if( qBarData != NULL ) {
+      if( xQueueReceive( qBarData, &barData, (TickType_t) 5 ) == pdTRUE) {
+         toLog[numToLog] = LOGID_BAR;
+         numToLog++;
+      }
+    }
     /*********************
     Now write any new data received above to the SD card
     HOPEFULLY  no need for mutex since this thread is the only one using the SPI port
@@ -826,6 +1050,16 @@ static void logThread( void *pvParameters )
           writeRmc(rmcData, logfile);
         } 
         
+        else if( toLog[i] == LOGID_BAR ){
+          logfile.print(xTaskGetTickCount());
+          logfile.print(", ");
+          logfile.print(barData.prs);
+          logfile.print(", ");
+          logfile.print(barData.alt);
+          logfile.print(", ");
+          logfile.println(barData.tmp);
+        }
+        
         // should not happen
         else {
           // errrrrr
@@ -836,6 +1070,7 @@ static void logThread( void *pvParameters )
       logfile.close();
     }
     
+    taskYIELD();
   }
   
   vTaskDelete( NULL );  
@@ -854,6 +1089,7 @@ static void parThread( void *pvParameters )
   prs_t prsData;
   nmea::GgaData ggaData;
   float alt=1.3e6, prs=0;
+  bool deployed = false;
 
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -865,17 +1101,19 @@ static void parThread( void *pvParameters )
   while(1) {
     // peek at gga and pressure queues to see if activation criteria have been met
     
-    myDelayMs(3000);
+    myDelayMs(100);
+    
+    if (deployed) continue;
     
     // PRESSURE
     if( qPrsData != NULL ) {
-      if( xQueuePeek( qPrsData, &prsData, (TickType_t) 10 ) == pdPASS) {
+      if( xQueuePeek( qPrsData, &prsData, portMAX_DELAY ) == pdPASS) {
 
         // TODO: DECIDE ON WHICH PRESSURE CHANNEL TO USE
         // USING ONLY ONE CHANNEL FOR NOW
         prs = prsData.data[0];
         
-        #ifdef DEBUG
+        #ifdef DEBUG_VERBOSE
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
           Serial.println("parachute: peeked at pressure data!");
           xSemaphoreGive( dbSem );
@@ -885,18 +1123,30 @@ static void parThread( void *pvParameters )
     }
     
     if( qGgaData != NULL ) {
-      if( xQueuePeek( qGgaData, &ggaData, (TickType_t) 10 ) == pdPASS) {
+      if( xQueuePeek( qGgaData, &ggaData, (TickType_t) 1000 ) == pdPASS) {
         alt = ggaData.altitude;
+        
+        #ifdef DEBUG_VERBOSE
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          Serial.println("parachute: peeked at gps data!");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
       } 
     }
     
-    if( ( alt <= ALT_THRESH ) && ( prs >= PRS_THRESH ) ){ // DEPLOYYY!
+    //if( ( alt <= ALT_THRESH ) && ( prs >= PRS_THRESH ) ){ // DEPLOYYY!
+    if( ( prs >= PRS_THRESH ) ){ // DEPLOYYY!
       #ifdef DEBUG
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        Serial.println("{INFO} !!! parachute deployment !!!");
+        Serial.println("{INFO} !!! parachute deployment !!!");
         Serial.println("{INFO} !!! parachute deployment !!!");
         xSemaphoreGive( dbSem );
       }
       #endif
+      
+      deployed = true;
       
       // TODO: interface with the parachute deployment hardware
       //...
@@ -916,13 +1166,20 @@ static void parThread( void *pvParameters )
 /**********************************************************************************/
 /**********************************************************************************/
 void setup() {
+
+  pinPeripheral(19, PIO_SERCOM);
+  pinPeripheral(18, PIO_SERCOM);
+
   #if DEBUG
   SERIAL.begin(115200); // init debug serial
   #endif
-  
+  delay(10);
   SERIAL_TPM.begin(34800); // init serial to tpm subsystem
+  delay(10);
   SERIAL_GPS.begin(9600); // init gps serial
+  delay(10);
   SERIAL_IRD.begin(9600); // init iridium serial
+  delay(10);
   
   myTransfer.begin(SERIAL_TPM, false, SERIAL, 500);
   myTransfer.begin(SERIAL_TPM);
@@ -957,7 +1214,7 @@ void setup() {
     #endif
   }
   // high g accel data queue
-  qAccData = xQueueCreate( 10, sizeof( struct acc_t ) );
+  qAccData = xQueueCreate( 20, sizeof( struct acc_t ) );
   if( qAccData == NULL ) {
     /* Queue was not created and must not be used. */
     #if DEBUG
@@ -986,6 +1243,14 @@ void setup() {
     /* Queue was not created and must not be used. */
     #if DEBUG
     SERIAL.println("Failed to create qRmcData queue");
+    #endif
+  }  
+  // barometrics pressure data queue
+  qBarData = xQueueCreate( 5, sizeof( struct barSenseData ) );
+  if( qBarData == NULL ) {
+    /* Queue was not created and must not be used. */
+    #if DEBUG
+    SERIAL.println("Failed to create qBarData queue");
     #endif
   }  
   // should take action if not all queues were created properly
@@ -1035,9 +1300,10 @@ void setup() {
   xTaskCreate(imuThread, "9 Axis IMU", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_imuTask);
   xTaskCreate(gpsThread, "GPS Reception", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_gpsTask);
   xTaskCreate(irdThread, "Iridium thread", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_irdTask);
-  xTaskCreate(parThread, "Parachute Deployment", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_parTask);
+  xTaskCreate(parThread, "Parachute Deployment", 512, NULL, tskIDLE_PRIORITY + 4, &Handle_parTask);
   xTaskCreate(tpmThread, "TPM Communication", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_tpmTask);
-  //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 3, &Handle_monitorTask);
+  xTaskCreate(barThread, "Capsule internals", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_barTask);
+  //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 4, &Handle_monitorTask);
   
   // Start the RTOS, this function will never return and will schedule the tasks.
   // signal to the TPM subsystem to start the task scheduler so that xTaskGetTickCount() is 
@@ -1057,4 +1323,89 @@ void setup() {
 
 void loop() {
   // tasks!
+}
+//*****************************************************************
+// Task will periodically print out useful information about the tasks running
+// Is a useful tool to help figure out stack sizes being used
+// Run time stats are generated from all task timing collected since startup
+// No easy way yet to clear the run time stats yet
+//*****************************************************************
+static char ptrTaskList[400]; //temporary string bufer for task stats
+
+void taskMonitor(void *pvParameters)
+{
+  int x;
+  int measurement;
+  if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+    SERIAL.println("Task Monitor: Started");
+    xSemaphoreGive( dbSem );
+  }
+  // run this task afew times before exiting forever
+  while(1)
+  {
+  	myDelayMs(10000); // print every 10 seconds
+
+    if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+    	SERIAL.println("****************************************************");
+    	SERIAL.print("Free Heap: ");
+    	SERIAL.print(xPortGetFreeHeapSize());
+    	SERIAL.println(" bytes");
+
+    	SERIAL.print("Min Heap: ");
+    	SERIAL.print(xPortGetMinimumEverFreeHeapSize());
+    	SERIAL.println(" bytes");
+
+    	SERIAL.println("****************************************************");
+    	SERIAL.println("Task            ABS             %Util");
+    	SERIAL.println("****************************************************");
+
+    	vTaskGetRunTimeStats(ptrTaskList); //save stats to char array
+    	SERIAL.println(ptrTaskList); //prints out already formatted stats
+
+	    /*SERIAL.println("****************************************************");
+	    SERIAL.println("Task            State   Prio    Stack   Num     Core" );
+	    SERIAL.println("****************************************************");
+
+	    vTaskList(ptrTaskList); //save stats to char array
+	    SERIAL.println(ptrTaskList); //prints out already formatted stats
+
+	    SERIAL.println("****************************************************");
+	    SERIAL.println("[Stacks Free Bytes Remaining] ");
+
+	    measurement = uxTaskGetStackHighWaterMark( Handle_logTask );
+	    SERIAL.print("Log Thread: ");
+	    SERIAL.println(measurement);
+
+	    measurement = uxTaskGetStackHighWaterMark( Handle_accTask );
+	    SERIAL.print("ACC thread: ");
+	    SERIAL.println(measurement);
+	    
+	    measurement = uxTaskGetStackHighWaterMark( Handle_imuTask );
+	    SERIAL.print("IMU Stack: ");
+	    SERIAL.println(measurement);
+	    
+	    measurement = uxTaskGetStackHighWaterMark( Handle_gpsTask );
+	    SERIAL.print("GPS Stack: ");
+	    SERIAL.println(measurement);
+	    
+	    measurement = uxTaskGetStackHighWaterMark( Handle_irdTask );
+	    SERIAL.print("IRD Stack: ");
+	    SERIAL.println(measurement);
+
+      measurement = uxTaskGetStackHighWaterMark( Handle_parTask );
+	    SERIAL.print("PAR Stack: ");
+	    SERIAL.println(measurement);
+	    
+	    measurement = uxTaskGetStackHighWaterMark( Handle_tpmTask );
+	    SERIAL.print("TPM Stack: ");
+	    SERIAL.println(measurement);*/
+
+	    SERIAL.println("****************************************************");
+      xSemaphoreGive( dbSem );
+    }
+  }
+
+  // delete ourselves.
+  // Have to call this or the system crashes when you reach the end bracket and then get scheduled.
+  vTaskDelete( NULL );
 }
