@@ -1,6 +1,8 @@
 #ifndef CDHPINS_H
 #define CDHPINS_H
 
+#define PIN_LORA_RST              A0
+
 #define PIN_SD_CS                 19 
 
 #define PIN_TPM_SCHEDULER_CTRL    18

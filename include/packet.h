@@ -34,6 +34,28 @@ struct prs_t {
   float data[NUM_PRS_CHANNELS];
 };
 
+//type PTYPE_BAR
+struct bar_t {
+  unsigned long t;
+  float prs;
+  float alt;
+  float tmp;
+};
+
+// type PTYPE_TELEM
+struct tlm_t {
+  unsigned long t;
+  float lat;     // gps latitude
+  float lon;     // gps longitude
+  float vel;     // gps velocity
+  float alt_gps; // gps altitude
+  float alt_bar; // barometer altitude
+  float barp;    // capsule internal barometric pressure
+  float tmp;     // capsule internal temperature
+  int   irsig;   // iridium signal strength
+  bool  pardep;  // parachute deployed yes/no
+  uint8_t thread_status[10]; // status codes for theads
+};
 
 
 #endif

@@ -73,11 +73,32 @@ void SERCOM4_3_Handler()
 }
 
 
+// Serial4
+Uart Serial4 (&sercom0, A1, A4, SERCOM_RX_PAD_1, UART_TX_PAD_0);
+void SERCOM0_0_Handler()
+{
+  Serial4.IrqHandler();
+}
+void SERCOM0_1_Handler()
+{
+  Serial4.IrqHandler();
+}
+void SERCOM0_2_Handler()
+{
+  Serial4.IrqHandler();
+}
+void SERCOM0_3_Handler()
+{
+  Serial4.IrqHandler();
+}
+
+
 // debug serial
 #define SERIAL      Serial  // debug serial (USB) all uses should be conditional on DEBUG define
 #define SERIAL_TPM  Serial1 // to TPM subsystem
 #define SERIAL_GPS  Serial2 // to gps
 #define SERIAL_IRD  Serial3 // to iridium modem
+#define SERIAL_LOR  Serial4 // to telemetry radio
 
 // Serial transfer object for receiving data from TPM processor
 SerialTransfer myTransfer;
@@ -88,11 +109,6 @@ H3LIS100 accel = H3LIS100(12345);
 // capsule internal barometric pressure object
 // and struct for passing data through queue
 Adafruit_MPL3115A2 baro;
-struct barSenseData {
-  float prs;
-  float alt;
-  float tmp;
-};
 
 // Check I2C device address and correct line below (by default address is 0x29 or 0x28)
 //                                   id, address
@@ -178,9 +194,9 @@ void writeRmc(nmea::RmcData const rmc, Stream &pipe)
   if (rmc.is_valid)
   {
     pipe.print(" : LON ");
-    pipe.print(rmc.longitude);
+    pipe.print(rmc.longitude, 5);
     pipe.print(" ° | LAT ");
-    pipe.print(rmc.latitude);
+    pipe.print(rmc.latitude, 5);
     pipe.print(" ° | VEL ");
     pipe.print(rmc.speed);
     pipe.print(" m/s | HEADING ");
@@ -213,9 +229,9 @@ void writeGga(nmea::GgaData const gga, Stream &pipe)
   if (gga.fix_quality != nmea::FixQuality::Invalid)
   {
     pipe.print(" : LON ");
-    pipe.print(gga.longitude);
+    pipe.print(gga.longitude, 5);
     pipe.print(" ° | LAT ");
-    pipe.print(gga.latitude);
+    pipe.print(gga.latitude, 5);
     pipe.print(" ° | Num Sat. ");
     pipe.print(gga.num_satellites);
     pipe.print(" | HDOP =  ");
@@ -263,7 +279,7 @@ void onGgaUpdate(nmea::GgaData const gga)
 static void barThread( void *pvParameters )
 {
   bool init = false;
-  barSenseData sensorData;
+  bar_t sensorData;
 
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -884,7 +900,7 @@ static void logThread( void *pvParameters )
   imu_t imuData;
   nmea::GgaData ggaData;
   nmea::RmcData rmcData;
-  barSenseData barData;
+  bar_t barData;
   File logfile;
   
   #ifdef DEBUG
@@ -1214,16 +1230,26 @@ void setup() {
   delay(10);
   SERIAL_IRD.begin(9600); // init iridium serial
   delay(10);
+  SERIAL_LOR.begin(115200); // init LORA telemetry radio serial
   
   
   // Assign pins A2 & A3 SERCOM functionality
+  pinPeripheral(A1, PIO_SERCOM_ALT);
+  pinPeripheral(A4, PIO_SERCOM_ALT);
   pinPeripheral(A2, PIO_SERCOM_ALT);
   pinPeripheral(A3, PIO_SERCOM_ALT);
   pinPeripheral(13, PIO_SERCOM);
   pinPeripheral(12, PIO_SERCOM);
   
+  // setup reliable serial datagram between CDH and TPM processors
   myTransfer.begin(SERIAL_TPM, false, SERIAL, 500);
   myTransfer.begin(SERIAL_TPM);
+  
+  // reset lora radio
+  pinMode(PIN_LORA_RST, OUTPUT);
+  digitalWrite(PIN_LORA_RST, LOW);
+  delay(100);
+  digitalWrite(PIN_LORA_RST, HIGH);
   
   // scheduler control pin to TPM subsystem
   pinMode(PIN_TPM_SCHEDULER_CTRL, OUTPUT);
@@ -1287,7 +1313,7 @@ void setup() {
     #endif
   }  
   // barometrics pressure data queue
-  qBarData = xQueueCreate( 5, sizeof( struct barSenseData ) );
+  qBarData = xQueueCreate( 5, sizeof( struct bar_t ) );
   if( qBarData == NULL ) {
     /* Queue was not created and must not be used. */
     #if DEBUG
@@ -1365,88 +1391,4 @@ void setup() {
 void loop() {
   // tasks!
 }
-//*****************************************************************
-// Task will periodically print out useful information about the tasks running
-// Is a useful tool to help figure out stack sizes being used
-// Run time stats are generated from all task timing collected since startup
-// No easy way yet to clear the run time stats yet
-//*****************************************************************
-static char ptrTaskList[400]; //temporary string bufer for task stats
 
-void taskMonitor(void *pvParameters)
-{
-  int x;
-  int measurement;
-  if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-    SERIAL.println("Task Monitor: Started");
-    xSemaphoreGive( dbSem );
-  }
-  // run this task afew times before exiting forever
-  while(1)
-  {
-  	myDelayMs(10000); // print every 10 seconds
-
-    if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-    	SERIAL.println("****************************************************");
-    	SERIAL.print("Free Heap: ");
-    	SERIAL.print(xPortGetFreeHeapSize());
-    	SERIAL.println(" bytes");
-
-    	SERIAL.print("Min Heap: ");
-    	SERIAL.print(xPortGetMinimumEverFreeHeapSize());
-    	SERIAL.println(" bytes");
-
-    	SERIAL.println("****************************************************");
-    	SERIAL.println("Task            ABS             %Util");
-    	SERIAL.println("****************************************************");
-
-    	vTaskGetRunTimeStats(ptrTaskList); //save stats to char array
-    	SERIAL.println(ptrTaskList); //prints out already formatted stats
-
-	    /*SERIAL.println("****************************************************");
-	    SERIAL.println("Task            State   Prio    Stack   Num     Core" );
-	    SERIAL.println("****************************************************");
-
-	    vTaskList(ptrTaskList); //save stats to char array
-	    SERIAL.println(ptrTaskList); //prints out already formatted stats
-
-	    SERIAL.println("****************************************************");
-	    SERIAL.println("[Stacks Free Bytes Remaining] ");
-
-	    measurement = uxTaskGetStackHighWaterMark( Handle_logTask );
-	    SERIAL.print("Log Thread: ");
-	    SERIAL.println(measurement);
-
-	    measurement = uxTaskGetStackHighWaterMark( Handle_accTask );
-	    SERIAL.print("ACC thread: ");
-	    SERIAL.println(measurement);
-	    
-	    measurement = uxTaskGetStackHighWaterMark( Handle_imuTask );
-	    SERIAL.print("IMU Stack: ");
-	    SERIAL.println(measurement);
-	    
-	    measurement = uxTaskGetStackHighWaterMark( Handle_gpsTask );
-	    SERIAL.print("GPS Stack: ");
-	    SERIAL.println(measurement);
-	    
-	    measurement = uxTaskGetStackHighWaterMark( Handle_irdTask );
-	    SERIAL.print("IRD Stack: ");
-	    SERIAL.println(measurement);
-
-      measurement = uxTaskGetStackHighWaterMark( Handle_parTask );
-	    SERIAL.print("PAR Stack: ");
-	    SERIAL.println(measurement);
-	    
-	    measurement = uxTaskGetStackHighWaterMark( Handle_tpmTask );
-	    SERIAL.print("TPM Stack: ");
-	    SERIAL.println(measurement);*/
-
-	    SERIAL.println("****************************************************");
-      xSemaphoreGive( dbSem );
-    }
-  }
-
-  // delete ourselves.
-  // Have to call this or the system crashes when you reach the end bracket and then get scheduled.
-  vTaskDelete( NULL );
-}
