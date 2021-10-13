@@ -4,22 +4,23 @@
 // and interpret in flight telemetry from the capsule, display on OLED 
 // and log to SD card
 
+#include <SPI.h>
 #include <Wire.h>
-#include <Adafruit_I2CDevice.h>
-#include <Adafruit_I2CRegister.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <Adafruit_I2CDevice.h>
+#include <Adafruit_I2CRegister.h>
 #include <FreeRTOS_SAMD21.h>
 #include <SerialTransfer.h>
 #include <semphr.h>
+#include <SD.h>
+
 
 #include "include/delay_helpers.h" // rtos delay helpers
 #include "include/config.h"        // project wide defs
 #include "include/packet.h"        // data packet defs
 #include "pins.h"                  // groundstation system pinouts
 
-
-#define RADIO_SERIAL Serial1
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
@@ -43,23 +44,119 @@ TaskHandle_t Handle_monitorTask;
 QueueHandle_t qLogData; // data queue for sending recvd radio data to the sd card to be logged
 QueueHandle_t qDisData; // data queue for sending recvd radio data to the display
 
+#define SERIAL Serial
+#define RADIO_SERIAL Serial1
 
 /**********************************************************************************
  * SD logging task
 */
 static void logThread( void *pvParameters )
 {
-    
+  bool ready = false;
+  rxtlm_t tlmData;
+  File logfile; 
   
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-    Serial.println("SD Logging thread started");
+    SERIAL.println("SD Logging thread started");
     xSemaphoreGive( dbSem );
   }
   #endif
   
+  String filename = "TLM00.txt";
+  
+  // INIT CARD
+  while (!SD.begin(PIN_SD_CS)) {
+    #if DEBUG
+    if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+      SERIAL.println("ERROR: sd logging thread couldn't init sd card");
+      xSemaphoreGive( dbSem );
+    }
+    #endif
+    ready = false;
+    myDelayMs(1000);
+  } 
+  
+  #if DEBUG
+  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+    SERIAL.println("SD CARD INIT OK");
+    xSemaphoreGive( dbSem );
+  }
+  #endif
+
+  // if we make it to hear, we are ready
+  ready = true;
+  
+  
+  // CREATE UNIQUE FILE NAME
+  for( uint8_t i=0; i < 100; i++) {
+    filename[3] = '0' + i/10;
+    filename[4] = '0' + i%10;
+    if (! SD.exists(filename)) {
+      break;
+    }
+  }
+  
   while(1) {
     
+    // check for log packet in queue and log to sd
+    // need to format data in one row with correct column names
+    
+    // if telem queue has been created successfully
+    if( qLogData != NULL ) {
+      if( xQueueReceive( qLogData, &tlmData, portMAX_DELAY ) == pdPASS) {
+        #ifdef DEBUG_VERBOSE
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          SERIAL.println("sd log: received telem data!");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+        
+        // now we have telem data in tlmData
+        
+        // try to open logfile
+        logfile = SD.open(filename, FILE_WRITE);
+      
+        // logfile no good
+        if( ! logfile ) {
+          #if DEBUG
+          if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+            SERIAL.print("ERROR: sd logging thread couldn't open logfile for writing: ");
+            SERIAL.println(filename);
+            xSemaphoreGive( dbSem );
+          }
+          #endif
+        }       
+        else { // LOGFILE OPEN!
+          
+          // write telem data to file
+          logfile.print(tlmData.tlm.t);
+          logfile.print(", ");
+          logfile.print(tlmData.tlm.lat, 6);
+          logfile.print(", ");
+          logfile.print(tlmData.tlm.lon, 6);
+          logfile.print(", ");
+          logfile.print(tlmData.tlm.vel, 2);
+          logfile.print(", ");
+          logfile.print(tlmData.tlm.alt_gps, 2);
+          logfile.print(", ");
+          logfile.print(tlmData.tlm.alt_bar, 2);
+          logfile.print(", ");
+          logfile.print(tlmData.tlm.barp, 3);
+          logfile.print(", ");
+          logfile.print(tlmData.tlm.tmp, 2);
+          logfile.print(", ");
+          logfile.print(tlmData.tlm.irsig);
+          logfile.print(", ");
+          logfile.print(tlmData.tlm.pardep);
+          // TODO: log status codes for threads
+          logfile.print(", "); logfile.print(tlmData.rssi);
+          logfile.print(", "); logfile.println(tlmData.snr);
+        }
+        
+        logfile.close();
+      }
+    }
   }
   
   vTaskDelete( NULL );  
@@ -70,11 +167,11 @@ static void logThread( void *pvParameters )
 */
 static void oledThread( void *pvParameters )
 {
-    
+  rxtlm_t tlmData;
   
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-    Serial.println("OLED thread started");
+    SERIAL.println("OLED thread started");
     xSemaphoreGive( dbSem );
   }
   #endif
@@ -85,7 +182,7 @@ static void oledThread( void *pvParameters )
     
     #ifdef DEBUG
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-      Serial.println("OLED thread started");
+      SERIAL.println("Failed to init OLED, retrying");
       xSemaphoreGive( dbSem );
     }
     #endif
@@ -108,17 +205,38 @@ static void oledThread( void *pvParameters )
   while(1) {
   
     // main telem display loop
-    
-    
+        
     // check data queue for new data to display
+    if( qDisData != NULL ) {
+      if( xQueueReceive( qLogData, &tlmData, portMAX_DELAY ) == pdPASS) {
+        #ifdef DEBUG_VERBOSE
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          SERIAL.println("oled thrd: received telem data!");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+        
+      }
+        
+    }
+    
     // put corresponding data on each page
-    
-    
     if( page == 1 ){
-    
-    
+      
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setCursor(0,0);
+      display.print("Loc: "); display.print(tlmData.tlm.lat, 4); 
+      display.print(", "); display.println(tlmData.tlm.lon, 4);
+      display.print("Vel (m/s): "); display.println(tlmData.tlm.vel, 1);
+      display.print("GPS alt (m): "); display.println(tlmData.tlm.alt_gps, 1);
+      display.print("Bar alt (m): "); display.println(tlmData.tlm.alt_bar, 1);
+      display.print("Int.prs. (hPa): "); display.println(tlmData.tlm.barp, 2);
+      display.print("Int.tmp. (C): "); display.println(tlmData.tlm.tmp, 1);
+      display.print("Ir. sig: "); display.println(tlmData.tlm.irsig, 4);
+      display.print("Par. dep: "); display.println(tlmData.tlm.pardep);
     } else if( page == 2 ){
-    
+      //show thread statuses
     }
     
     
@@ -138,7 +256,7 @@ static void radThread( void *pvParameters )
   
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-    Serial.println("Radio thread started");
+    SERIAL.println("Radio thread started");
     xSemaphoreGive( dbSem );
   }
   #endif
@@ -151,7 +269,7 @@ static void radThread( void *pvParameters )
   
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-    Serial.println("Reset radio");
+    SERIAL.println("Reset radio");
     xSemaphoreGive( dbSem );
   }
   #endif
@@ -191,21 +309,21 @@ static void radThread( void *pvParameters )
     if( timeout ){
       #ifdef DEBUG
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        Serial.println("Radio rx timed out");
+        SERIAL.println("Radio rx timed out");
         xSemaphoreGive( dbSem );
       }
       #endif
     } else if (!timeout && eol) {
       #ifdef DEBUG
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        Serial.println("Radio got packet!");
+        SERIAL.println("Radio got packet!");
         xSemaphoreGive( dbSem );
       }
       #endif
     } else if( !timeout && !eol) {
       #ifdef DEBUG
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        Serial.println("Radio receive buffer overrun!");
+        SERIAL.println("Radio receive buffer overrun!");
         xSemaphoreGive( dbSem );
       }
       #endif
@@ -215,35 +333,41 @@ static void radThread( void *pvParameters )
     // now process the data line received
     if( (rbuf[0] == '+') && !timeout && eol){
       
-      /*
+      
       int eqpos = 1;
       while( rbuf[eqpos] != '=' &&  eqpos < pos){
         eqpos++;
       }
       if( eqpos == pos ){
-        // '=' not found, must be +READY message
+        #ifdef DEBUG
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          SERIAL.print("We think we got a +READY message, we actually got: ");
+          SERIAL.println(rbuf);
+          xSemaphoreGive( dbSem );
+        }
+        #endif
       } else {
         // found an '=', parse rest of message
+        #ifdef DEBUG
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          SERIAL.print("We think we got a message with an '=' in it, we actually got: ");
+          SERIAL.println(rbuf);
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+        
+        //
+        // TODO: parse the packet and fill the rxtlm_t struct with data
+        //       and send to the logging and display queues
+        // 
         
       }
-      */
-      
-      #ifdef DEBUG
-      if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        Serial.print("Got message: ");
-        Serial.println(rbuf);
-        xSemaphoreGive( dbSem );
-      }
-      #endif
-      
-      
-      
       
     } else {
       // shouldn't happen
       #ifdef DEBUG
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        Serial.println("ERROR: we think we got a packet but the first byte of the buffer is 0!");
+        SERIAL.println("ERROR: we think we got a packet but the first byte of the buffer is 0!");
         xSemaphoreGive( dbSem );
       }
       #endif
@@ -255,7 +379,55 @@ static void radThread( void *pvParameters )
 }
 
 void setup() {
+  SERIAL.begin(115200);
+  delay(10);
+  RADIO_SERIAL.begin(115200);
+  delay(10);
+  
+  delay(1000);
+  
+  SERIAL.println("Starting...");
+
+  // CREATE RTOS QUEUES 
+  // temperature data queue
+  qDisData = xQueueCreate( 5, sizeof( struct rxtlm_t ) );
+  if( qDisData == NULL ) {
+    /* Queue was not created and must not be used. */
+    #if DEBUG
+    SERIAL.println("Failed to create qDisData queue");
+    #endif
+  }
+  // pressure data queue
+  qLogData = xQueueCreate( 5, sizeof( struct rxtlm_t ) );
+  if( qLogData == NULL ) {
+    /* Queue was not created and must not be used. */
+    #if DEBUG
+    SERIAL.println("Failed to create qLogData queue");
+    #endif
+  }
+  
+  SERIAL.println("Created queues...");
+  
+  /**************
+  * CREATE TASKS
+  **************/
+  xTaskCreate(logThread, "SD Logging", 1024, NULL, tskIDLE_PRIORITY + 2, &Handle_logTask);
+  xTaskCreate(oledThread, "OLED Control", 1024, NULL, tskIDLE_PRIORITY + 2, &Handle_lcdTask);
+  xTaskCreate(radThread, "Radio Control", 1024, NULL, tskIDLE_PRIORITY + 2, &Handle_radTask);
+  //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 4, &Handle_monitorTask);
+
+  // start the scheduler
+  vTaskStartScheduler();
+
+  // error scheduler failed to start
+  while(1)
+  {
+	  SERIAL.println("Scheduler Failed! \n");
+	  delay(1000);
+  }
+  
 }
 
 void loop() {
+  // tasks!
 }

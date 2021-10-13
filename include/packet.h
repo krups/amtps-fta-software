@@ -44,7 +44,7 @@ struct bar_t {
 
 // type PTYPE_TELEM
 struct tlm_t {
-  unsigned long t;
+  unsigned long t; // system time when packet was sent in # of scheduler ticks (ms)
   float lat;     // gps latitude
   float lon;     // gps longitude
   float vel;     // gps velocity
@@ -57,5 +57,11 @@ struct tlm_t {
   uint8_t thread_status[10]; // status codes for theads
 };
 
+// not a packet type, used in the groundstation firmware to hold the extra radio receive info
+struct rxtlm_t {
+  tlm_t tlm;
+  int rssi;
+  int snr;
+};
 
 #endif
