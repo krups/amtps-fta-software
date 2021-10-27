@@ -83,7 +83,7 @@ static void mcpThread( void *pvParameters )
     // assign tc temps from MCP objects to local vars
     for( int i=0; i<NUM_TC_CHANNELS; i++ ){
       current_temps[i] = readMCP(i);
-      myDelayMs(50);
+      myDelayMs(5);
     }
     
     #ifdef DEBUG
@@ -143,7 +143,7 @@ static void prsThread( void *pvParameters )
   #endif
   
   while(1) {
-    myDelayMs(1000);
+    myDelayMs(995);
 
     if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 100 ) == pdTRUE ) {
       select_i2cmux_channel(3);
@@ -202,78 +202,8 @@ static void prsThread( void *pvParameters )
   vTaskDelete( NULL );  
 }
 
-//*****************************************************************
-// Task will periodically print out useful information about the tasks running
-// Is a useful tool to help figure out stack sizes being used
-// Run time stats are generated from all task timing collected since startup
-// No easy way yet to clear the run time stats yet
-//*****************************************************************
-static char ptrTaskList[400]; //temporary string bufer for task stats
-
-void taskMonitor(void *pvParameters)
-{
-  int x;
-  int measurement;
-  if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-    SERIAL.println("Task Monitor: Started");
-    xSemaphoreGive( dbSem );
-  }
-  // run this task afew times before exiting forever
-  while(1)
-  {
-  	myDelayMs(10000); // print every 10 seconds
-
-    if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-    	SERIAL.println("****************************************************");
-    	SERIAL.print("Free Heap: ");
-    	SERIAL.print(xPortGetFreeHeapSize());
-    	SERIAL.println(" bytes");
-
-    	SERIAL.print("Min Heap: ");
-    	SERIAL.print(xPortGetMinimumEverFreeHeapSize());
-    	SERIAL.println(" bytes");
-
-    	SERIAL.println("****************************************************");
-    	SERIAL.println("Task            ABS             %Util");
-    	SERIAL.println("****************************************************");
-
-    	vTaskGetRunTimeStats(ptrTaskList); //save stats to char array
-    	SERIAL.println(ptrTaskList); //prints out already formatted stats
-
-	    SERIAL.println("****************************************************");
-	    SERIAL.println("Task            State   Prio    Stack   Num     Core" );
-	    SERIAL.println("****************************************************");
-
-	    vTaskList(ptrTaskList); //save stats to char array
-	    SERIAL.println(ptrTaskList); //prints out already formatted stats
-
-	    SERIAL.println("****************************************************");
-	    SERIAL.println("[Stacks Free Bytes Remaining] ");
-
-	    measurement = uxTaskGetStackHighWaterMark( Handle_mcpTask );
-	    SERIAL.print("TC Thread: ");
-	    SERIAL.println(measurement);
-
-	    measurement = uxTaskGetStackHighWaterMark( Handle_prsTask );
-	    SERIAL.print("Pressure thread: ");
-	    SERIAL.println(measurement);
-	    
-	    measurement = uxTaskGetStackHighWaterMark( Handle_monitorTask );
-	    SERIAL.print("Monitor Stack: ");
-	    SERIAL.println(measurement);
-
-	    SERIAL.println("****************************************************");
-      xSemaphoreGive( dbSem );
-    }
-  }
-
-  // delete ourselves.
-  // Have to call this or the system crashes when you reach the end bracket and then get scheduled.
-  vTaskDelete( NULL );
-}
-
 void ledToggle() {
-  digitalWrite(LED_ACT, !digitalRead(LED_ACT));
+  digitalWrite(PIN_LED_ACT, !digitalRead(PIN_LED_ACT));
 }
 
 
@@ -286,7 +216,7 @@ float readMCP(int id) {
   
   if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 100 ) == pdTRUE ) {
       select_i2cmux_channel( muxchn );
-      myDelayMs(5);
+      myDelayMs(1);
       // TODO: use struct for data transfer + read adc and convert to heat flux 
       hot     = mcps[id].readThermocouple();
       //ambient = mcps[id].readAmbient();
@@ -307,7 +237,9 @@ bool initMCP(int id) {
   uint8_t tries = 0;
   uint8_t max_tries = 100;
   
+  #if DEBUG
   SERIAL.print("Starting MCP #");SERIAL.print(id);
+  #endif
   
   select_i2cmux_channel( muxchn );
   delay(10);
@@ -321,9 +253,13 @@ bool initMCP(int id) {
   //}
   if( tries == max_tries) {
     ok = false;
+    #if DEBUG
     SERIAL.println("Sensor not found. Check wiring!");
+    #endif    
   } else {
+    #if DEBUG
     SERIAL.println("  Found MCP9600!");
+    #endif
   }
   
   mcps[id].setADCresolution(MCP9600_ADCRESOLUTION_14);
@@ -372,12 +308,20 @@ void select_i2cmux_channel(uint8_t c)
  * Main setup
 */
 void setup() {
+
+  #if DEBUG
   SERIAL.begin(115200);
-  SERIAL_CDH.begin(34800);
-  delay(3000);
-  SERIAL.println("Starting..");
+  #endif
   
-  pinMode(SCHED_CTRL, INPUT);
+  SERIAL_CDH.begin(TPM_SERIAL_BAUD);
+  delay(3000);
+  
+  #if DEBUG
+  SERIAL.println("Starting..");
+  #endif
+  
+  pinMode(PIN_SCHED_CTRL, INPUT);
+  pinMode(PIN_LED_ACT, OUTPUT);
   
   myTransfer.begin(SERIAL_CDH);
   
@@ -400,7 +344,9 @@ void setup() {
     ledToggle();
   }
   if (!ok) {
+    #if DEBUG
     SERIAL.println("failed to start all MCP devices");
+    #endif
   }
   
   // setup cdh serial port smphr
@@ -430,12 +376,14 @@ void setup() {
   //SERIAL.println("Created Tasks, waiting for signal from CDH to start scheduler");
   
   // blink to signify waiting
-  // TODO: make this better so it breaks immediately
-  while( digitalRead(SCHED_CTRL) == LOW ) {
-    digitalWrite(PIN_LED, HIGH);
-    delay(10);
-    digitalWrite(PIN_LED, LOW);
-    delay(10);
+  unsigned long lastToggle = 0;
+  bool state = 0;
+  while( digitalRead(PIN_SCHED_CTRL) == LOW ) {
+    if( xTaskGetTickCount() - lastToggle > 500 ){
+      digitalWrite(PIN_LED_ACT, state);
+      state = !state;
+      lastToggle = xTaskGetTickCount();
+    }    
   }
 
   // Start the RTOS, this function will never return and will schedule the tasks.
@@ -444,7 +392,10 @@ void setup() {
   // error scheduler failed to start
   while(1)
   {
+    #if DEBUG
 	  SERIAL.println("Scheduler Failed! \n");
+	  #endif
+	  
 	  delay(1000);
   }
 }

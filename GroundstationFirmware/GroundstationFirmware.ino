@@ -173,6 +173,7 @@ static void logThread( void *pvParameters )
 static void oledThread( void *pvParameters )
 {
   rxtlm_t tlmData;
+  int pcount = 0;
   
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -216,7 +217,7 @@ static void oledThread( void *pvParameters )
           xSemaphoreGive( dbSem );
         }
         #endif
-        
+        pcount++;
       }
         
     }
@@ -249,6 +250,8 @@ static void oledThread( void *pvParameters )
       u8g2.print("Prs: "); u8g2.println(tlmData.tlm.barp, 2); u8g2.print(" hPa");
       u8g2.setCursor(0,60);
       u8g2.print("Tmp: "); u8g2.println(tlmData.tlm.tmp, 1); u8g2.print(" C");
+      u8g2.setCursor(110,60);
+      u8g2.print(pcount);
       u8g2.sendBuffer();
       
       
@@ -260,8 +263,12 @@ static void oledThread( void *pvParameters )
       u8g2.print("Ir. sig: "); u8g2.println(tlmData.tlm.irsig);
       u8g2.setCursor(0,20);
       u8g2.print("Par. dep: "); u8g2.println(tlmData.tlm.pardep);
+      u8g2.setCursor(110,60);
+      u8g2.print(pcount);
       u8g2.sendBuffer();
     } else if( page == 2 ){
+      u8g2.setCursor(100,60);
+      u8g2.print(pcount);
       //show thread statuses
       //tlmData.tlm.thread_status
     }
@@ -320,7 +327,7 @@ static void radThread( void *pvParameters )
   memset(rbuf, 0, RBUF_SIZE);
   memset(sbuf, 0, SBUF_SIZE);
   
-  RADIO_SERIAL.print("AT+RESET\r\n");
+  //RADIO_SERIAL.print("AT+RESET\r\n");
   
   while(1) {
   
