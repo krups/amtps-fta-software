@@ -8,10 +8,12 @@
 #include <Wire.h>
 #include <Adafruit_I2CDevice.h>
 #include <Adafruit_I2CRegister.h>
+#include <Adafruit_SleepyDog.h>
 #include <FreeRTOS_SAMD21.h>
 #include <Adafruit_MCP9600.h>
 #include <SerialTransfer.h>
 #include <Honeywell_ABP.h>
+
 #include <semphr.h>
 
 #include "include/delay_helpers.h" // rtos delay helpers
@@ -21,7 +23,17 @@
 
 #define I2CMUX_ADDR (0x70) 
 
+
+
+
 #define DEBUG 1
+
+#ifdef DEBUG
+#define DEBUG_TC
+//#define DEBUG_PRESSURE
+#endif
+
+
 
 // debug serial
 #define SERIAL Serial
@@ -43,6 +55,7 @@ TaskHandle_t Handle_monitorTask;
 SemaphoreHandle_t cdhSerialSem; // data transmit to CDH semaphore
 SemaphoreHandle_t dbSem; // serial debug logging (Serial)
 SemaphoreHandle_t i2c1Sem; // i2c port 1 access semaphore
+SemaphoreHandle_t dogSem;
 
 // freeRTOS queues
 QueueHandle_t qMcpData; // data queue for sending thermal data to CDH processor over serial
@@ -70,6 +83,7 @@ static void mcpThread( void *pvParameters )
 {
   float current_temps[NUM_TC_CHANNELS];  
   unsigned long lastDebug = 0;
+  unsigned long lastRead = 0;
 
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -79,48 +93,55 @@ static void mcpThread( void *pvParameters )
   #endif
   
   while(1) {
+    if( xTaskGetTickCount() - lastRead > 250 ){
+      lastRead = xTaskGetTickCount();
+      safeKick();  
 
-    // assign tc temps from MCP objects to local vars
-    for( int i=0; i<NUM_TC_CHANNELS; i++ ){
-      current_temps[i] = readMCP(i);
-      myDelayMs(5);
-    }
-    
-    #ifdef DEBUG
-    if( xTaskGetTickCount() - lastDebug > 1000 ){
-      if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        // print tc temps over serial
-        SERIAL.print("TC temps: ");
-        for( int i=0; i<NUM_TC_CHANNELS; i++ ){
-          SERIAL.print(current_temps[i]); if(i<NUM_TC_CHANNELS-1) SERIAL.print(", ");
-        }
-        SERIAL.println();
-        xSemaphoreGive( dbSem ); 
+      // assign tc temps from MCP objects to local vars
+      for( int i=0; i<NUM_TC_CHANNELS; i++ ){
+        current_temps[i] = readMCP(i);
+        //myDelayMs(5);
+        safeKick();
       }
-      lastDebug = xTaskGetTickCount();
-    }
-    #endif
-    
-    // build data struct to send over serial
-    tc_t data;
-    data.t = xTaskGetTickCount();
-    for( int i=0; i<NUM_TC_CHANNELS; i++ ){
-      data.data[i] = current_temps[i];
-    }
-    
-    // check cdh serial acccess
-    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 100 ) == pdTRUE ) {
-      // send TC data to CDH
-      uint16_t sendSize = 0;
-      uint8_t type = PTYPE_TMP;
-      sendSize = myTransfer.txObj(type, sendSize);
-      sendSize = myTransfer.txObj(data, sendSize);
-      myTransfer.sendData(sendSize);
-      xSemaphoreGive( cdhSerialSem );
-    }
       
-    // but eh more blinks
-    ledToggle();
+      #ifdef DEBUG_TC
+      if( xTaskGetTickCount() - lastDebug > 1000 ){
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          // print tc temps over serial
+          SERIAL.print("TC temps: ");
+          for( int i=0; i<NUM_TC_CHANNELS; i++ ){
+            SERIAL.print(current_temps[i]); if(i<NUM_TC_CHANNELS-1) SERIAL.print(", ");
+          }
+          SERIAL.println();
+          xSemaphoreGive( dbSem ); 
+        }
+        lastDebug = xTaskGetTickCount();
+      }
+      #endif
+      
+      // build data struct to send over serial
+      tc_t data;
+      data.t = xTaskGetTickCount();
+      for( int i=0; i<NUM_TC_CHANNELS; i++ ){
+        data.data[i] = current_temps[i];
+      }
+      
+      // check cdh serial acccess
+      if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        // send TC data to CDH
+        uint16_t sendSize = 0;
+        uint8_t type = PTYPE_TMP;
+        sendSize = myTransfer.txObj(type, sendSize);
+        sendSize = myTransfer.txObj(data, sendSize);
+        myTransfer.sendData(sendSize);
+        xSemaphoreGive( cdhSerialSem );
+        
+        // but eh more blinks
+        ledToggle();
+      }
+    }
+    
+    taskYIELD();
   }
   
   vTaskDelete( NULL );  
@@ -133,7 +154,7 @@ static void mcpThread( void *pvParameters )
 static void prsThread( void *pvParameters )
 {
   float pressures[5];  
-  
+  unsigned long lastRead = 0;
 
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -143,60 +164,65 @@ static void prsThread( void *pvParameters )
   #endif
   
   while(1) {
-    myDelayMs(995);
-
-    if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 100 ) == pdTRUE ) {
-      select_i2cmux_channel(3);
-      ps1.update();
-      select_i2cmux_channel(4);
-      ps2.update();
-      select_i2cmux_channel(5);
-      ps3.update();
-      select_i2cmux_channel(6);
-      ps4.update();
-      select_i2cmux_channel(7);
-      ps5.update();
-      xSemaphoreGive( i2c1Sem ); // Now free or "Give" the Serial Port for others.
-    }
-    
-    #ifdef DEBUG
-    if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-      Serial.print("Pressures: ");
-      SERIAL.print(ps1.pressure()); SERIAL.print(", ");
-      SERIAL.print(ps2.pressure()); SERIAL.print(", ");
-      SERIAL.print(ps3.pressure()); SERIAL.print(", ");
-      SERIAL.print(ps4.pressure()); SERIAL.print(", ");
-      SERIAL.print(ps5.pressure()); SERIAL.println();
-      xSemaphoreGive( dbSem ); // Now free or "Give" the Serial Port for others.
-    }
-    #endif
-    
-    pressures[0] = ps1.pressure();
-    pressures[1] = ps2.pressure();
-    pressures[2] = ps3.pressure();
-    pressures[3] = ps4.pressure();
-    pressures[4] = ps5.pressure();
-    
-    // copy pressure data to struct to be sent
-    prs_t data;
-    data.t = xTaskGetTickCount();
-    for( int i=0; i<NUM_PRS_CHANNELS; i++ ){
-      data.data[i] = pressures[i];
-    }
-    
-    // send pressure packet to cdh
-    if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 100 ) == pdTRUE ) {
-      // send temperature and pressure data over serial
-      uint8_t type = PTYPE_PRS;
-      uint16_t sendSize = 0;
-      sendSize = myTransfer.txObj(type, sendSize);
-      sendSize = myTransfer.txObj(data, sendSize); 
-      myTransfer.sendData(sendSize);
-      xSemaphoreGive( cdhSerialSem );
-    }
+    if( xTaskGetTickCount() - lastRead > 250 ) {  
+      lastRead = xTaskGetTickCount(); 
+      safeKick();
       
-    // but eh more blinks
-    ledToggle();
+      if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 100 ) == pdTRUE ) {
+        select_i2cmux_channel(3);
+        ps1.update();
+        select_i2cmux_channel(4);
+        ps2.update();
+        select_i2cmux_channel(5);
+        ps3.update();
+        select_i2cmux_channel(6);
+        ps4.update();
+        select_i2cmux_channel(7);
+        ps5.update();
+        xSemaphoreGive( i2c1Sem ); // Now free or "Give" the Serial Port for others.
+      }
+      
+      #ifdef DEBUG_PRESSURE
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+        Serial.print("Pressures: ");
+        SERIAL.print(ps1.pressure()); SERIAL.print(", ");
+        SERIAL.print(ps2.pressure()); SERIAL.print(", ");
+        SERIAL.print(ps3.pressure()); SERIAL.print(", ");
+        SERIAL.print(ps4.pressure()); SERIAL.print(", ");
+        SERIAL.print(ps5.pressure()); SERIAL.println();
+        xSemaphoreGive( dbSem ); // Now free or "Give" the Serial Port for others.
+      }
+      #endif
+      
+      pressures[0] = ps1.pressure();
+      pressures[1] = ps2.pressure();
+      pressures[2] = ps3.pressure();
+      pressures[3] = ps4.pressure();
+      pressures[4] = ps5.pressure();
+      
+      // copy pressure data to struct to be sent
+      prs_t data;
+      data.t = xTaskGetTickCount();
+      for( int i=0; i<NUM_PRS_CHANNELS; i++ ){
+        data.data[i] = pressures[i];
+      }
+      
+      // send pressure packet to cdh
+      if ( xSemaphoreTake( cdhSerialSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        // send temperature and pressure data over serial
+        uint8_t type = PTYPE_PRS;
+        uint16_t sendSize = 0;
+        sendSize = myTransfer.txObj(type, sendSize);
+        sendSize = myTransfer.txObj(data, sendSize); 
+        myTransfer.sendData(sendSize);
+        xSemaphoreGive( cdhSerialSem );
+        
+        // but eh more blinks
+        ledToggle();
+      }
+    }
+    
+    taskYIELD();
   }
   
   vTaskDelete( NULL );  
@@ -211,14 +237,24 @@ void ledToggle() {
  * 
 */
 float readMCP(int id) {
+  static int lmc = -1; // last mux channel used
   uint8_t muxchn = MCP_I2CMUX_CHANNELS[(int)(id/6)];
   float hot=0.0;//ambient=0.0,adcval=0.0;
   
   if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 100 ) == pdTRUE ) {
-      select_i2cmux_channel( muxchn );
-      myDelayMs(1);
-      // TODO: use struct for data transfer + read adc and convert to heat flux 
-      hot     = mcps[id].readThermocouple();
+      if( muxchn != lmc ){
+        select_i2cmux_channel( muxchn );
+        lmc = muxchn;
+        myDelayMs(5);
+      }
+      
+      //if( mcps[id].enabled() ){
+      
+        // TODO: use struct for data transfer + read adc and convert to heat flux 
+        hot     = mcps[id].readThermocouple();
+      //} else {
+      //  hot = -1.0;
+      //}
       //ambient = mcps[id].readAmbient();
       //adcval  = mcps[id].readADC();
       xSemaphoreGive( i2c1Sem );
@@ -228,7 +264,7 @@ float readMCP(int id) {
 }
 
 
-// initialize an MCP device (0-17)
+// initialize an MCP device
 // made to run before task scheduler is started
 bool initMCP(int id) {
   bool ok = true;
@@ -263,14 +299,16 @@ bool initMCP(int id) {
   }
   
   mcps[id].setADCresolution(MCP9600_ADCRESOLUTION_14);
-  /*SERIAL.print("ADC resolution set to ");
+  /*
+  SERIAL.print("ADC resolution set to ");
   switch (mcps[id].getADCresolution()) {
     case MCP9600_ADCRESOLUTION_18:   SERIAL.print("18"); break;
     case MCP9600_ADCRESOLUTION_16:   SERIAL.print("16"); break;
     case MCP9600_ADCRESOLUTION_14:   SERIAL.print("14"); break;
     case MCP9600_ADCRESOLUTION_12:   SERIAL.print("12"); break;
   }
-  SERIAL.println(" bits");*/
+  SERIAL.println(" bits");
+  */
 
   mcps[id].setThermocoupleType(MCP9600_TYPE_K);
   /*SERIAL.print("Thermocouple type set to ");
@@ -284,11 +322,16 @@ bool initMCP(int id) {
     case MCP9600_TYPE_B:  SERIAL.print("B"); break;
     case MCP9600_TYPE_R:  SERIAL.print("R"); break;
   }
-  SERIAL.println(" type");*/
-
-  mcps[id].setFilterCoefficient(3);
+  //SERIAL.println(" type");
+  */
+  
+  //mcps[id].setFilterCoefficient(1);
   //SERIAL.print("Filter coefficient value set to: ");
   //SERIAL.println(mcps[id].getFilterCoefficient());
+
+  #ifdef DEBUG
+  SERIAL.println("started mcp");
+  #endif
 
   mcps[id].enable(true);
 
@@ -304,6 +347,13 @@ void select_i2cmux_channel(uint8_t c)
   Wire.endTransmission();
 }
 
+void safeKick() {
+  if ( xSemaphoreTake( dogSem, ( TickType_t )  0) == pdTRUE ) {  
+   Watchdog.reset();  
+   xSemaphoreGive( dogSem );
+  }
+}
+
 /**********************************************************************************
  * Main setup
 */
@@ -314,14 +364,26 @@ void setup() {
   #endif
   
   SERIAL_CDH.begin(TPM_SERIAL_BAUD);
+
+  pinMode(PIN_SCHED_CTRL, INPUT);
+
+  #ifdef USELEDS
+  pinMode(PIN_ERR_LED, OUTPUT);
+  pinMode(PIN_LED_ACT, OUTPUT);
+  for(int i=0; i<5; i++) {
+    digitalWrite(PIN_LED_ACT, HIGH);
+    delay(200);
+    digitalWrite(PIN_LED_ACT, LOW);
+    delay(200);
+  }
+  #endif
+  
+  
   delay(3000);
   
   #if DEBUG
   SERIAL.println("Starting..");
   #endif
-  
-  pinMode(PIN_SCHED_CTRL, INPUT);
-  pinMode(PIN_LED_ACT, OUTPUT);
   
   myTransfer.begin(SERIAL_CDH);
   
@@ -334,16 +396,21 @@ void setup() {
   //delay(10);
   //select_i2cmux_channel(1);
   
-  //TODO: watchdog or to reset device if MCP initialization fails
+  int countdownMS = Watchdog.enable(5000);
   
   // initialize all MCP9600 sensors
   bool ok = true;
-  for( int i=0; i<18; i++) {
+  for( int i=0; i<TOT_MCP_COUNT; i++) {
     ok &= initMCP(i);
-    delay(10);
+    delay(100);
     ledToggle();
+    Watchdog.reset();
   }
   if (!ok) {
+    #ifdef USELEDS
+    digitalWrite(PIN_ERR_LED, ERR_LED_ONSTATE);
+    #endif
+  
     #if DEBUG
     SERIAL.println("failed to start all MCP devices");
     #endif
@@ -367,25 +434,31 @@ void setup() {
     if ( ( i2c1Sem ) != NULL )
       xSemaphoreGive( ( i2c1Sem ) );  // make available
   }
-  
-  
-  xTaskCreate(mcpThread, "MCP9600 Conversion", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_mcpTask);
-  xTaskCreate(prsThread, "Pressure Sensing", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_prsTask);
-  //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 3, &Handle_monitorTask);
-  
-  //SERIAL.println("Created Tasks, waiting for signal from CDH to start scheduler");
+  // setup watchdog semaphore so he doesn't try to get kicked at the same time
+  if ( dogSem == NULL ) {
+    dogSem = xSemaphoreCreateMutex();  // create mutex
+    if ( ( dogSem ) != NULL )
+      xSemaphoreGive( ( dogSem ) );  // make available
+  }
   
   // blink to signify waiting
   unsigned long lastToggle = 0;
   bool state = 0;
   while( digitalRead(PIN_SCHED_CTRL) == LOW ) {
-    if( xTaskGetTickCount() - lastToggle > 500 ){
+    if( millis() - lastToggle > 500 ){
+      #ifdef USELEDS
       digitalWrite(PIN_LED_ACT, state);
+      #endif
       state = !state;
-      lastToggle = xTaskGetTickCount();
+      lastToggle = millis();
+      Watchdog.reset();
     }    
   }
-
+  
+  xTaskCreate(mcpThread, "MCP9600 Conversion", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_mcpTask);
+  xTaskCreate(prsThread, "Pressure Sensing", 512, NULL, tskIDLE_PRIORITY + 3, &Handle_prsTask);
+  //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 3, &Handle_monitorTask);
+  
   // Start the RTOS, this function will never return and will schedule the tasks.
   vTaskStartScheduler();
 

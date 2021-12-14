@@ -25,8 +25,13 @@
 //#define DEBUG 1 // usb serial debug switch
 #ifdef DEBUG
   #define DEBUG_GPS 1 // print raw gga to serial 
-  #define DEBUG_QUEUE 1 // print info on log queue operations
-  #define DEBUG_VERBOSE 1
+  //#define DEBUG_QUEUE 1 // print info on log queue operations
+  //#define DEBUG_VERBOSE 1
+  //#define DEBUG_BARO 1
+  #define DEBUG_IRD 1
+  #define DEBUG_LOG 1
+  #define DEBUG_PAR 1
+  //#define DEBUG_RAD 1
 #endif
 
 bool sendPackets = 0;
@@ -289,7 +294,7 @@ static void barThread( void *pvParameters )
   bool init = false;
   bar_t sensorData;
 
-  #ifdef DEBUG
+  #ifdef DEBUG_BARO
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     Serial.println("Barometer thread started");
     xSemaphoreGive( dbSem );
@@ -310,7 +315,7 @@ static void barThread( void *pvParameters )
     }
   }
   
-  #ifdef DEBUG
+  #ifdef DEBUG_BARO
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     Serial.println("Barometer initialized!");
     xSemaphoreGive( dbSem );
@@ -328,7 +333,7 @@ static void barThread( void *pvParameters )
   
     if( xQueueSend( qBarData, ( void * ) &sensorData, ( TickType_t ) 100 ) != pdTRUE ) {
         /* Failed to post the message, even after 100 ticks. */
-        #ifdef DEBUG
+        #ifdef DEBUG_BARO
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
           SERIAL.println("BAR: failed to put sensor data into queue");
           xSemaphoreGive( dbSem );
@@ -343,7 +348,7 @@ static void barThread( void *pvParameters )
         #endif
       }
     
-    #ifdef DEBUG_VERBOSE
+    #ifdef DEBUG_BARO
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
       Serial.print("pressure = "); Serial.print(sensorData.prs); Serial.println(" hPa");
       Serial.print("altitude = "); Serial.print(sensorData.alt); Serial.println(" m");
@@ -367,7 +372,7 @@ static void barThread( void *pvParameters )
 */
 static void gpsThread( void *pvParameters )
 {
-  #ifdef DEBUG
+  #ifdef DEBUG_GPS
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     Serial.println("GPS thread started");
     xSemaphoreGive( dbSem );
@@ -406,7 +411,7 @@ static void irdThread( void *pvParameters )
   
   sprintf(buf, "No GPS fix yet.");
   
-  #ifdef DEBUG
+  #ifdef DEBUG_IRD
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     Serial.println("Iridium thread started");
     xSemaphoreGive( dbSem );
@@ -419,7 +424,7 @@ static void irdThread( void *pvParameters )
   myDelayMs(5000); // give modem time to power up
     
     
-   #ifdef DEBUG
+  #ifdef DEBUG_IRD
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     Serial.println("Iridium thread: trying to start modem!...");
     xSemaphoreGive( dbSem );
@@ -429,7 +434,7 @@ static void irdThread( void *pvParameters )
   // init the iridium library and check signal strength
   irerr = modem.begin();
   
-  #ifdef DEBUG
+  #ifdef DEBUG_IRD
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     SERIAL.println("IRIDIUM: called modem.begin()");
     xSemaphoreGive( dbSem );
@@ -438,7 +443,7 @@ static void irdThread( void *pvParameters )
     
   
   while( irerr != ISBD_SUCCESS ){
-    #ifdef DEBUG
+    #ifdef DEBUG_IRD
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
       SERIAL.println("IRIDIUM: Begin failed: error " + String(irerr));
       xSemaphoreGive( dbSem );
@@ -446,7 +451,7 @@ static void irdThread( void *pvParameters )
     #endif
     
     if( irerr == ISBD_NO_MODEM_DETECTED ){
-      #ifdef DEBUG
+      #ifdef DEBUG_IRD
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
         SERIAL.println("IRIDIUM: No modem detected: check wiring. ");
         xSemaphoreGive( dbSem );
@@ -459,7 +464,7 @@ static void irdThread( void *pvParameters )
     myDelayMs(1000);
   }
   
-  #ifdef DEBUG
+  #ifdef DEBUG_IRD
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     SERIAL.println("IRIDIUM: modem initialized!");
     xSemaphoreGive( dbSem );
@@ -473,7 +478,7 @@ static void irdThread( void *pvParameters )
   irerr = modem.getSignalQuality(mSq);
   if( irerr != ISBD_SUCCESS ){
     
-    #ifdef DEBUG
+    #ifdef DEBUG_IRD
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
       SERIAL.println("IRIDIUM: SignalQuality failed: error " + String(irerr));
       //syslog("IRIDIUM: failed to get first signal strength reading");
@@ -485,7 +490,7 @@ static void irdThread( void *pvParameters )
     
     
   } else {
-    #ifdef DEBUG
+    #ifdef DEBUG_IRD
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
       SERIAL.println("IRIDIUM: first signal strength: " + String(mSq));
       //syslog("IRIDIUM: failed to get first signal strength reading");
@@ -507,7 +512,7 @@ static void irdThread( void *pvParameters )
       irerr = modem.getSignalQuality(mSq);
       if( irerr != ISBD_SUCCESS ){
         
-        #ifdef DEBUG
+        #ifdef DEBUG_IRD
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
           SERIAL.println("IRIDIUM: get SignalQuality failed: error " + String(irerr));
           //syslog("IRIDIUM: failed to get first signal strength reading");
@@ -517,7 +522,7 @@ static void irdThread( void *pvParameters )
         }
         #endif 
       } else {
-        #ifdef DEBUG
+        #ifdef DEBUG_IRD
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
           SERIAL.println("IRIDIUM: signal strength: " + String(mSq));
           //syslog("IRIDIUM: failed to get first signal strength reading");
@@ -591,7 +596,7 @@ static void irdThread( void *pvParameters )
         fix_valid &&
         sendPackets ){
       
-      #ifdef DEBUG
+      #ifdef DEBUG_IRD
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
       SERIAL.println("IRIDIUM: sending packet");
       xSemaphoreGive( dbSem );
@@ -602,7 +607,7 @@ static void irdThread( void *pvParameters )
       irerr = modem.sendSBDText(buf);
             
       if (irerr != ISBD_SUCCESS) { // sending failed
-        #ifdef DEBUG
+        #ifdef DEBUG_IRD
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
           SERIAL.println("IRIDIUM: failed to send packet :( error " + String(irerr));
           xSemaphoreGive( dbSem );
@@ -610,7 +615,7 @@ static void irdThread( void *pvParameters )
         #endif 
       }
       else { // send success
-        #ifdef DEBUG
+        #ifdef DEBUG_IRD
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
           SERIAL.println("IRIDIUM: successfully sent a packet!!!!!!");
           xSemaphoreGive( dbSem );
@@ -638,7 +643,7 @@ static void irdThread( void *pvParameters )
 static void tpmThread( void *pvParameters )
 {
 
-  #ifdef DEBUG
+  #ifdef DEBUG_TPM
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     Serial.println("TPM comms thread started");
     xSemaphoreGive( dbSem );
@@ -699,7 +704,7 @@ static void tpmThread( void *pvParameters )
         }
         #endif
       } else {
-        #ifdef TPM_PACKET_DEBUG
+        #ifdef DEBUG_QUEUE
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
           SERIAL.println("TPM: added tc packet to queue!");
           xSemaphoreGive( dbSem );
@@ -720,7 +725,7 @@ static void tpmThread( void *pvParameters )
         }
         #endif
       } else {
-        #ifdef TPM_PACKET_DEBUG
+        #ifdef DEBUG_QUEUE
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
           SERIAL.println("TPM: added pressure packet to queue!!!!");
           xSemaphoreGive( dbSem );
@@ -756,6 +761,7 @@ static void logThread( void *pvParameters )
 {
   static bool ready = false;
   int numToLog;
+  int numToLog_init;
   uint8_t toLog[NUM_LOG_FILES];
   tc_t  tmpData;
   prs_t prsData;
@@ -766,7 +772,7 @@ static void logThread( void *pvParameters )
   bar_t barData;
   File logfile;
   
-  #ifdef DEBUG
+  #ifdef DEBUG_LOG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     Serial.println("sd logging thread thread started");
     xSemaphoreGive( dbSem );
@@ -775,10 +781,6 @@ static void logThread( void *pvParameters )
   
   String filenames[NUM_LOG_FILES];
   filenames[0] = LOGFILE0; // TMP
-  filenames[1] = LOGFILE1; // PRS
-  filenames[2] = LOGFILE2; // GGA
-  filenames[3] = LOGFILE3; // RMC
-  filenames[4] = LOGFILE4; // BAR
   
   // INIT CARD
   while (!SD.begin(PIN_SD_CS)) {
@@ -823,7 +825,8 @@ static void logThread( void *pvParameters )
     
     // TC / HEAT FLUX
     if( qTmpData != NULL ) {
-      if( xQueueReceive( qTmpData, &tmpData, (TickType_t) 5 ) == pdTRUE) {
+      numToLog_init = numToLog;
+      while( xQueueReceive( qTmpData, &tmpData, (TickType_t) 1 ) == pdTRUE && numToLog-numToLog_init < 5 ) {
          toLog[numToLog] = LOGID_TMP;
          numToLog++;
       }
@@ -831,7 +834,8 @@ static void logThread( void *pvParameters )
     
     // PRESSURE
     if( qPrsData != NULL ) {
-      if( xQueueReceive( qPrsData, &prsData, (TickType_t) 5 ) == pdTRUE) {
+      numToLog_init = numToLog;
+      if( xQueueReceive( qPrsData, &prsData, (TickType_t) 1 ) == pdTRUE && numToLog-numToLog_init < 5 ) {
          toLog[numToLog] = LOGID_PRS;
          numToLog++;
       }
@@ -839,7 +843,8 @@ static void logThread( void *pvParameters )
     
     // GGA GPA DATA
     if( qGgaData != NULL ) {
-      if( xQueueReceive( qGgaData, &ggaData, (TickType_t) 5 ) == pdTRUE) {
+      numToLog_init = numToLog;
+      if( xQueueReceive( qGgaData, &ggaData, (TickType_t) 5 ) == pdTRUE && numToLog-numToLog_init < 5 ) {
          toLog[numToLog] = LOGID_GGA;
          numToLog++;
       }
@@ -847,7 +852,8 @@ static void logThread( void *pvParameters )
     
     // RMC GPS DATA
     if( qRmcData != NULL ) {
-      if( xQueueReceive( qRmcData, &rmcData, (TickType_t) 5 ) == pdTRUE) {
+      numToLog_init = numToLog;
+      if( xQueueReceive( qRmcData, &rmcData, (TickType_t) 5 ) == pdTRUE && numToLog-numToLog_init < 5 ) {
          toLog[numToLog] = LOGID_RMC;
          numToLog++;
       }
@@ -855,7 +861,8 @@ static void logThread( void *pvParameters )
     
     // BAROMETER ALT/PRS/TMP DATA
     if( qBarData != NULL ) {
-      if( xQueueReceive( qBarData, &barData, (TickType_t) 5 ) == pdTRUE) {
+      numToLog_init = numToLog;
+      if( xQueueReceive( qBarData, &barData, (TickType_t) 1 ) == pdTRUE && numToLog-numToLog_init < 5 ) {
          toLog[numToLog] = LOGID_BAR;
          numToLog++;
       }
@@ -865,80 +872,89 @@ static void logThread( void *pvParameters )
     HOPEFULLY  no need for mutex since this thread is the only one using the SPI port
     *********************/
     
-    for( int i=0; i<numToLog; i++ ){
-      logfile = SD.open(filenames[toLog[i]], FILE_WRITE);
+    // open last log file for all telem (single log file configuration)
+    logfile = SD.open(filenames[NUM_LOG_FILES-1], FILE_WRITE);
+    // logfile no good
+    if( ! logfile ) {
+      #if DEBUG
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        Serial.print("ERROR: sd logging thread couldn't open logfile for writing: ");
+        Serial.println(filenames[0]);
+        xSemaphoreGive( dbSem );
+      }
+      #endif
+    }
       
-      // logfile no good
-      if( ! logfile ) {
-        #if DEBUG
-        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-          Serial.print("ERROR: sd logging thread couldn't open logfile for writing: ");
-          Serial.println(filenames[toLog[i]]);
-          xSemaphoreGive( dbSem );
-        }
-        #endif
-      }       
-      else { // LOGFILE OPEN!
-        // write to respective files
-        // for now log in CSV because flight times are short and we have GB to spare
-        
-        // tc / heat flux
-        if( toLog[i] == LOGID_TMP ){
-          logfile.print(tmpData.t);
-          logfile.print(", ");
-          for( int j=0; j<NUM_TC_CHANNELS; j++ ){
-            logfile.print(tmpData.data[j]);
-            if( j<NUM_TC_CHANNELS-1 ){
-              logfile.print(", ");
-            } else {
-              logfile.println();
-            }
+    // LOGFILE OPEN!
+    // log in CSV format for now because we are lazy
+    for( int i=0; i<numToLog; i++ ){
+    
+      // tc / heat flux
+      if( toLog[i] == LOGID_TMP ){
+        logfile.print(tmpData.t);
+        logfile.print(", ");
+        logfile.print(LOGID_TMP);
+        logfile.print(", ");
+        for( int j=0; j<NUM_TC_CHANNELS; j++ ){
+          logfile.print(tmpData.data[j]);
+          if( j<NUM_TC_CHANNELS-1 ){
+            logfile.print(", ");
+          } else {
+            logfile.println();
           }
-        }
-        
-        // pressure
-        else if( toLog[i] == LOGID_PRS ){
-          logfile.print(prsData.t);
-          logfile.print(", ");
-          for( int j=0; j<NUM_PRS_CHANNELS; j++ ){
-            logfile.print(prsData.data[j]);
-            if( j<NUM_PRS_CHANNELS-1 ){
-              logfile.print(", ");
-            } else {
-              logfile.println();
-            }
-          }
-        }
-        
-        // GGA GPS data
-        else if( toLog[i] == LOGID_GGA ){
-          writeGga(ggaData, logfile);
-        }
-        
-        // RMC GPS data
-        else if( toLog[i] == LOGID_RMC ){
-          writeRmc(rmcData, logfile);
-        } 
-        
-        else if( toLog[i] == LOGID_BAR ){
-          logfile.print(xTaskGetTickCount());
-          logfile.print(", ");
-          logfile.print(barData.prs);
-          logfile.print(", ");
-          logfile.print(barData.alt);
-          logfile.print(", ");
-          logfile.println(barData.tmp);
-        }
-        
-        // should not happen
-        else {
-          // errrrrr
         }
       }
       
-      // done writing to this file
-      logfile.close();
+      // pressure
+      else if( toLog[i] == LOGID_PRS ){
+        logfile.print(prsData.t);
+        logfile.print(", ");
+        logfile.print(LOGID_PRS);
+        logfile.print(", ");
+        for( int j=0; j<NUM_PRS_CHANNELS; j++ ){
+          logfile.print(prsData.data[j]);
+          if( j<NUM_PRS_CHANNELS-1 ){
+            logfile.print(", ");
+          } else {
+            logfile.println();
+          }
+        }
+      }
+      
+      // GGA GPS data
+      else if( toLog[i] == LOGID_GGA ){
+        logfile.print(LOGID_GGA);
+        logfile.print(", ");
+        writeGga(ggaData, logfile);
+      }
+      
+      // RMC GPS data
+      else if( toLog[i] == LOGID_RMC ){
+        logfile.print(LOGID_RMC);
+        logfile.print(", ");
+        writeRmc(rmcData, logfile);
+      } 
+      
+      else if( toLog[i] == LOGID_BAR ){
+        logfile.print(xTaskGetTickCount());
+        logfile.print(", ");
+        logfile.print(LOGID_BAR);
+        logfile.print(", ");
+        logfile.print(barData.prs);
+        logfile.print(", ");
+        logfile.print(barData.alt);
+        logfile.print(", ");
+        logfile.println(barData.tmp);
+      }
+      
+      // should not happen
+      else {
+        // errrrrr
+      }
     }
+    
+    // done writing to this file
+    logfile.close();
     
     taskYIELD();
   }
@@ -961,7 +977,7 @@ static void parThread( void *pvParameters )
   float alt=1.3e6, prs=0;
   bool deployed = false;
 
-  #ifdef DEBUG
+  #ifdef DEBUG_PAR
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     Serial.println("parachute deployment thread started");
     xSemaphoreGive( dbSem );
@@ -1076,7 +1092,7 @@ static void radThread( void *pvParameters )
   //SERIAL_LOR.print("AT+RESET\r\n");
   //SERIAL_LOR.flush();
   
-  #ifdef DEBUG
+  #ifdef DEBUG_RAD
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     SERIAL.println("Reset radio");
     xSemaphoreGive( dbSem );
@@ -1087,7 +1103,7 @@ static void radThread( void *pvParameters )
   memset(rbuf, 0, RBUF_SIZE);
   memset(sbuf, 0, SBUF_SIZE);
   
-  #ifdef DEBUG
+  #ifdef DEBUG_RAD
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     SERIAL.println("zerod buffers");
     xSemaphoreGive( dbSem );
@@ -1117,7 +1133,7 @@ static void radThread( void *pvParameters )
       int len = sprintf(sbuf, "AT+ADDRESS=1\r\n");
       SERIAL_LOR.write(sbuf, len);
       state = 2;
-      #ifdef DEBUG
+      #ifdef DEBUG_RAD
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
         Serial.println("sent at+address, setting state to 2");
         xSemaphoreGive( dbSem );
@@ -1128,7 +1144,7 @@ static void radThread( void *pvParameters )
       int len = sprintf(sbuf, "AT+NETWORKID=1\r\n");
       SERIAL_LOR.write(sbuf, len);
       state = 4;
-      #ifdef DEBUG
+      #ifdef DEBUG_RAD
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
         Serial.println("sent at+networkid, setting state to 4");
         xSemaphoreGive( dbSem );
@@ -1139,7 +1155,7 @@ static void radThread( void *pvParameters )
       int len = sprintf(sbuf, "AT+PARAMETER=12,4,1,7\r\n"); // recommended for more than 3km
       SERIAL_LOR.write(sbuf, len);
       state = 6;
-      #ifdef DEBUG
+      #ifdef DEBUG_RAD
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
         Serial.println("sent at+param, setting state to 6");
         xSemaphoreGive( dbSem );
@@ -1187,7 +1203,7 @@ static void radThread( void *pvParameters )
           dataOut.barp = barData.prs;
           dataOut.tmp = barData.tmp;
           
-          #ifdef DEBUG
+          #ifdef DEBUG_QUEUE
           if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
             Serial.println("lora: peeked at RMC data!");
             xSemaphoreGive( dbSem );
@@ -1245,11 +1261,11 @@ static void radThread( void *pvParameters )
       sbuf[pre+dataSize+2] = 0;
       
       
-      #ifdef DEBUG
+      #ifdef DEBUG_RAD
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        SERIAL.print("sending: ");
-        SERIAL.write(sbuf, pre+dataSize+3);
-        SERIAL.println("DONE");
+        SERIAL.print("sending radio binary packet: ");
+        //SERIAL.write(sbuf, pre+dataSize+3);
+        //SERIAL.println("DONE");
         xSemaphoreGive( dbSem );
       }
       #endif
@@ -1275,7 +1291,7 @@ static void radThread( void *pvParameters )
     unsigned long timeoutStart = 0;
     if( SERIAL_LOR.peek() == '+' ){
       
-      #ifdef DEBUG
+      #ifdef DEBUG_RAD
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
         SERIAL.println("saw a +");
         xSemaphoreGive( dbSem );
@@ -1341,7 +1357,7 @@ static void radThread( void *pvParameters )
         if( eqpos == pos ){
           #ifdef DEBUG
           if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-            SERIAL.print("We think we got a +READY or +OK message, we actually got: ");
+            SERIAL.print("Received ");
             SERIAL.write(rbuf, pos);
             SERIAL.println();
             xSemaphoreGive( dbSem );
@@ -1372,7 +1388,7 @@ static void radThread( void *pvParameters )
           // found an '=', parse rest of message
           #ifdef DEBUG
           if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-            SERIAL.print("We think we got a message with an '=' in it, we actually got: ");
+            SERIAL.print("Received ");
             SERIAL.write(rbuf, pos);
             xSemaphoreGive( dbSem );
           }
@@ -1443,7 +1459,9 @@ void setup() {
 
   delay(3000);
   
+  #ifdef DEBUG
   SERIAL.println("Starting...");
+  #endif
 
   // CREATE RTOS QUEUES 
   // temperature data queue
@@ -1488,7 +1506,9 @@ void setup() {
   }  
   // should take action if not all queues were created properly
   
+  #ifdef DEBUG
   SERIAL.println("Created queues...");
+  #endif
   
   // SETUP RTOS SEMAPHORES
   // setup cdh serial port smphr
@@ -1533,8 +1553,10 @@ void setup() {
     if ( ( sigSem ) != NULL )
       xSemaphoreGive( ( sigSem ) );  // make available
   }
+  
+  #ifdef DEBUG
   SERIAL.println("Created semaphores...");
-
+  #endif
   
   /**************
   * CREATE TASKS

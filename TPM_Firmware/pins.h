@@ -2,5 +2,7 @@
 
 #define PIN_LED_ACT 13
 
+#define PIN_ERR_LED 11
+
 #define PIN_SCHED_CTRL 12
 
