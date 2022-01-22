@@ -30,7 +30,7 @@
 
 #ifdef DEBUG
 #define DEBUG_TC
-//#define DEBUG_PRESSURE
+#define DEBUG_PRESSURE
 #endif
 
 
@@ -93,7 +93,7 @@ static void mcpThread( void *pvParameters )
   #endif
   
   while(1) {
-    if( xTaskGetTickCount() - lastRead > 250 ){
+    if( xTaskGetTickCount() - lastRead > 500 ){
       lastRead = xTaskGetTickCount();
       safeKick();  
 
@@ -164,7 +164,7 @@ static void prsThread( void *pvParameters )
   #endif
   
   while(1) {
-    if( xTaskGetTickCount() - lastRead > 250 ) {  
+    if( xTaskGetTickCount() - lastRead > 500 ) {  
       lastRead = xTaskGetTickCount(); 
       safeKick();
       
@@ -368,14 +368,25 @@ void setup() {
   pinMode(PIN_SCHED_CTRL, INPUT);
 
   #ifdef USELEDS
-  pinMode(PIN_ERR_LED, OUTPUT);
+  pinMode(PIN_LED_BUILTIN, OUTPUT);
+  pinMode(PIN_LED_ERR, OUTPUT);
+  pinMode(PIN_LED_PWR, OUTPUT);
+  pinMode(PIN_LED_RUN, OUTPUT);
   pinMode(PIN_LED_ACT, OUTPUT);
   for(int i=0; i<5; i++) {
+    digitalWrite(PIN_LED_PWR, HIGH);
+    digitalWrite(PIN_LED_RUN, HIGH);
     digitalWrite(PIN_LED_ACT, HIGH);
+    digitalWrite(PIN_LED_ERR, HIGH);
     delay(200);
+    digitalWrite(PIN_LED_PWR, LOW);
+    digitalWrite(PIN_LED_RUN, LOW);
     digitalWrite(PIN_LED_ACT, LOW);
+    digitalWrite(PIN_LED_ERR, LOW);
     delay(200);
   }
+  
+    
   #endif
   
   
@@ -408,7 +419,7 @@ void setup() {
   }
   if (!ok) {
     #ifdef USELEDS
-    digitalWrite(PIN_ERR_LED, ERR_LED_ONSTATE);
+    digitalWrite(PIN_LED_ERR, ERR_LED_ONSTATE);
     #endif
   
     #if DEBUG

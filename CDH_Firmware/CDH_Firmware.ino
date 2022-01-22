@@ -17,19 +17,25 @@
 #include <semphr.h>
 #include <SD.h>
 #include <SPI.h>
+#include <Servo.h>
 #include "wiring_private.h"
 
 #include <Adafruit_BNO055.h>
 #include <utility/imumaths.h>
 
-//#define DEBUG 1 // usb serial debug switch
+#define CO2SERVO_POS_ACT  17
+#define CO2SERVO_POS_HOME 150
+
+Servo co2servo;
+
+#define DEBUG 1 // usb serial debug switch
 #ifdef DEBUG
-  #define DEBUG_GPS 1 // print raw gga to serial 
+  //#define DEBUG_GPS 1 // print raw gga to serial 
   //#define DEBUG_QUEUE 1 // print info on log queue operations
   //#define DEBUG_VERBOSE 1
   //#define DEBUG_BARO 1
   #define DEBUG_IRD 1
-  #define DEBUG_LOG 1
+  //#define DEBUG_LOG 1
   #define DEBUG_PAR 1
   //#define DEBUG_RAD 1
 #endif
@@ -39,7 +45,6 @@ bool sendPackets = 0;
 //#include <Mahony_DPEng.h>
 //#include <Madgwick_DPEng.h>
 
-#include "H3LIS100.h"
 #include "include/delay_helpers.h" // rtos delay helpers
 #include "include/config.h"        // project wide defs
 #include "include/packet.h"        // packet definitions
@@ -107,8 +112,8 @@ void SERCOM0_3_Handler()
 // debug serial
 #define SERIAL      Serial  // debug serial (USB) all uses should be conditional on DEBUG define
 #define SERIAL_TPM  Serial1 // to TPM subsystem
-#define SERIAL_GPS  Serial2 // to gps
-#define SERIAL_IRD  Serial3 // to iridium modem
+#define SERIAL_GPS  Serial3 // to gps
+#define SERIAL_IRD  Serial2 // to iridium modem
 #define SERIAL_LOR  Serial4 // to telemetry radio
 
 // Serial transfer object for receiving data from TPM processor
@@ -657,7 +662,7 @@ static void tpmThread( void *pvParameters )
   
   while(1) {
     
-    myDelayMs(10);
+    //myDelayMs(10);
     
     int result = 0;
     
@@ -761,7 +766,6 @@ static void logThread( void *pvParameters )
 {
   static bool ready = false;
   int numToLog;
-  int numToLog_init;
   uint8_t toLog[NUM_LOG_FILES];
   tc_t  tmpData;
   prs_t prsData;
@@ -780,7 +784,7 @@ static void logThread( void *pvParameters )
   #endif
   
   String filenames[NUM_LOG_FILES];
-  filenames[0] = LOGFILE0; // TMP
+  filenames[0] = LOGFILE0; // TLM
   
   // INIT CARD
   while (!SD.begin(PIN_SD_CS)) {
@@ -825,8 +829,7 @@ static void logThread( void *pvParameters )
     
     // TC / HEAT FLUX
     if( qTmpData != NULL ) {
-      numToLog_init = numToLog;
-      while( xQueueReceive( qTmpData, &tmpData, (TickType_t) 1 ) == pdTRUE && numToLog-numToLog_init < 5 ) {
+      if( xQueueReceive( qTmpData, &tmpData, (TickType_t) 1 ) == pdTRUE ) {
          toLog[numToLog] = LOGID_TMP;
          numToLog++;
       }
@@ -834,8 +837,7 @@ static void logThread( void *pvParameters )
     
     // PRESSURE
     if( qPrsData != NULL ) {
-      numToLog_init = numToLog;
-      if( xQueueReceive( qPrsData, &prsData, (TickType_t) 1 ) == pdTRUE && numToLog-numToLog_init < 5 ) {
+      if( xQueueReceive( qPrsData, &prsData, (TickType_t) 1 ) == pdTRUE ) {
          toLog[numToLog] = LOGID_PRS;
          numToLog++;
       }
@@ -843,8 +845,7 @@ static void logThread( void *pvParameters )
     
     // GGA GPA DATA
     if( qGgaData != NULL ) {
-      numToLog_init = numToLog;
-      if( xQueueReceive( qGgaData, &ggaData, (TickType_t) 5 ) == pdTRUE && numToLog-numToLog_init < 5 ) {
+      if( xQueueReceive( qGgaData, &ggaData, (TickType_t) 5 ) == pdTRUE ) {
          toLog[numToLog] = LOGID_GGA;
          numToLog++;
       }
@@ -852,8 +853,7 @@ static void logThread( void *pvParameters )
     
     // RMC GPS DATA
     if( qRmcData != NULL ) {
-      numToLog_init = numToLog;
-      if( xQueueReceive( qRmcData, &rmcData, (TickType_t) 5 ) == pdTRUE && numToLog-numToLog_init < 5 ) {
+      if( xQueueReceive( qRmcData, &rmcData, (TickType_t) 5 ) == pdTRUE ) {
          toLog[numToLog] = LOGID_RMC;
          numToLog++;
       }
@@ -861,8 +861,7 @@ static void logThread( void *pvParameters )
     
     // BAROMETER ALT/PRS/TMP DATA
     if( qBarData != NULL ) {
-      numToLog_init = numToLog;
-      if( xQueueReceive( qBarData, &barData, (TickType_t) 1 ) == pdTRUE && numToLog-numToLog_init < 5 ) {
+      if( xQueueReceive( qBarData, &barData, (TickType_t) 1 ) == pdTRUE ) {
          toLog[numToLog] = LOGID_BAR;
          numToLog++;
       }
@@ -1022,7 +1021,15 @@ static void parThread( void *pvParameters )
     }
     
     //if( ( alt <= ALT_THRESH ) && ( prs >= PRS_THRESH ) ){ // DEPLOYYY!
-    if( ( prs >= PRS_THRESH ) ){ // DEPLOYYY!
+    if( ( prs >= PRS_THRESH ) ){
+      deployed = true;
+    }
+    
+    if ( /* received deploy over radio */ false ) {
+      deployed = true;
+    }
+    
+    if( deployed ){
       #ifdef DEBUG
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
         Serial.println("{INFO} !!! parachute deployment !!!");
@@ -1036,10 +1043,12 @@ static void parThread( void *pvParameters )
         globalDeploy = true;
         xSemaphoreGive( depSem );
       }
-      deployed = true;
       
-      // TODO: interface with the parachute deployment hardware
-      //...
+      // now start paracture deployment sequence
+      // first trigger c02 servo
+      
+      co2servo.write(CO2SERVO_POS_ACT);
+      
     }
     
   }
@@ -1139,6 +1148,7 @@ static void radThread( void *pvParameters )
         xSemaphoreGive( dbSem );
       }
       #endif
+      taskYIELD();
     }
     else if( state == 3 ){
       int len = sprintf(sbuf, "AT+NETWORKID=1\r\n");
@@ -1150,6 +1160,7 @@ static void radThread( void *pvParameters )
         xSemaphoreGive( dbSem );
       }
       #endif
+      taskYIELD();
     }
     else if( state == 5 ){
       int len = sprintf(sbuf, "AT+PARAMETER=12,4,1,7\r\n"); // recommended for more than 3km
@@ -1161,6 +1172,7 @@ static void radThread( void *pvParameters )
         xSemaphoreGive( dbSem );
       }
       #endif
+      taskYIELD();
     }
     
     if( xTaskGetTickCount() - lastSendTime > TLM_SEND_PERIOD && state == 7){
@@ -1322,21 +1334,21 @@ static void radThread( void *pvParameters )
     
     
       if( timeout ){
-        #ifdef DEBUG
+        #ifdef DEBUG_RAD
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
           SERIAL.println("Radio rx timed out");
           xSemaphoreGive( dbSem );
         }
         #endif
       } else if (!timeout && eol) {
-        #ifdef DEBUG
+        #ifdef DEBUG_RAD
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
           SERIAL.println("Radio got packet!");
           xSemaphoreGive( dbSem );
         }
         #endif
       } else if( !timeout && !eol) {
-        #ifdef DEBUG
+        #ifdef DEBUG_RAD
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
           SERIAL.println("Radio receive buffer overrun!");
           xSemaphoreGive( dbSem );
@@ -1355,7 +1367,7 @@ static void radThread( void *pvParameters )
         }
         
         if( eqpos == pos ){
-          #ifdef DEBUG
+          #ifdef DEBUG_RAD
           if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
             SERIAL.print("Received ");
             SERIAL.write(rbuf, pos);
@@ -1367,21 +1379,23 @@ static void radThread( void *pvParameters )
           if( state < 7 ){
             state ++;
             if( state == 7 ){
-              #ifdef DEBUG
+              #ifdef DEBUG_RAD
               if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
                 SERIAL.println("STATE = 7, successfully configured radio!");
                 xSemaphoreGive( dbSem );
               }
               #endif
+              taskYIELD();
             }
           } else if( state > 7 ){
-            #ifdef DEBUG
+            #ifdef DEBUG_RAD
             state = 7;
             if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
               SERIAL.println("STATE was 8, received +OK from a data send operation!");
               xSemaphoreGive( dbSem );
             }
-            #endif 
+            #endif
+            taskYIELD(); 
           }
           
         } else {
@@ -1417,9 +1431,15 @@ static void radThread( void *pvParameters )
 /**********************************************************************************/
 void setup() {
 
+  // attach servo
+  co2servo.attach(PIN_C02SERVO);
+  co2servo.write(CO2SERVO_POS_HOME);
+
   #if DEBUG
   SERIAL.begin(115200); // init debug serial
   #endif
+  
+  delay(100);
   
   delay(10);
   SERIAL_TPM.begin(TPM_SERIAL_BAUD); // init serial to tpm subsystem
@@ -1440,7 +1460,7 @@ void setup() {
   pinPeripheral(12, PIO_SERCOM);
   
   // setup reliable serial datagram between CDH and TPM processors
-  myTransfer.begin(SERIAL_TPM, false, SERIAL, 500);
+  //myTransfer.begin(SERIAL_TPM, false, SERIAL, 500);
   myTransfer.begin(SERIAL_TPM);
   
   // reset pin for lora radio
@@ -1448,6 +1468,15 @@ void setup() {
   
   // battery voltage divider 
   pinMode(PIN_VBAT, INPUT);
+  
+  // servo control
+  pinMode(PIN_C02SERVO, OUTPUT);
+  
+  // iridium power switch
+  pinMode(PIN_IRACT, OUTPUT);
+  
+  // pyro power switch
+  pinMode(PIN_PYROACT, OUTPUT);
   
   // scheduler control pin to TPM subsystem
   pinMode(PIN_TPM_SCHEDULER_CTRL, OUTPUT);
@@ -1561,13 +1590,13 @@ void setup() {
   /**************
   * CREATE TASKS
   **************/
-  xTaskCreate(logThread, "SD Logging", 1024, NULL, tskIDLE_PRIORITY + 3, &Handle_logTask);
-  xTaskCreate(gpsThread, "GPS Reception", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_gpsTask);
-  xTaskCreate(irdThread, "Iridium thread", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_irdTask);
-  xTaskCreate(parThread, "Parachute Deployment", 512, NULL, tskIDLE_PRIORITY + 4, &Handle_parTask);
-  xTaskCreate(tpmThread, "TPM Communication", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_tpmTask);
-  xTaskCreate(barThread, "Capsule internals", 512, NULL, tskIDLE_PRIORITY + 2, &Handle_barTask);
-  xTaskCreate(radThread, "Telem radio", 1024, NULL, tskIDLE_PRIORITY + 2, &Handle_radTask);
+  xTaskCreate(logThread, "SD Logging", 1024, NULL, tskIDLE_PRIORITY, &Handle_logTask);
+  xTaskCreate(gpsThread, "GPS Reception", 512, NULL, tskIDLE_PRIORITY, &Handle_gpsTask);
+  xTaskCreate(irdThread, "Iridium thread", 512, NULL, tskIDLE_PRIORITY, &Handle_irdTask);
+  xTaskCreate(parThread, "Parachute Deployment", 512, NULL, tskIDLE_PRIORITY, &Handle_parTask);
+  xTaskCreate(tpmThread, "TPM Communication", 512, NULL, tskIDLE_PRIORITY, &Handle_tpmTask);
+  xTaskCreate(barThread, "Capsule internals", 512, NULL, tskIDLE_PRIORITY, &Handle_barTask);
+  xTaskCreate(radThread, "Telem radio", 1024, NULL, tskIDLE_PRIORITY, &Handle_radTask);
   //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 4, &Handle_monitorTask);
   
   // Start the RTOS, this function will never return and will schedule the tasks.
@@ -1575,6 +1604,8 @@ void setup() {
   // consistent between the two
   digitalWrite(PIN_TPM_SCHEDULER_CTRL, HIGH);
   vTaskStartScheduler();
+  
+  co2servo.write(CO2SERVO_POS_HOME);
 
   // error scheduler failed to start
   while(1)

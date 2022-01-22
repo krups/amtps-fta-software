@@ -1,8 +1,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
- #define USELEDS
-#define ERR_LED_ONSTATE 0
+#define USELEDS
+#define ERR_LED_ONSTATE 1
 
 #define IRIDIUM_PACKET_PERIOD 60000 // milliseconds, send a packet every minute
 #define CHECK_SIGNAL_PERIOD   5000 // milliseconds
@@ -21,15 +21,18 @@
 
 #define NUM_PRS_CHANNELS      5  // kPa pressure sensors
 #define NUM_BAR_CHANNELS      3  // pressure in hPa, altitude in meters, capsule internal temperature in deg. celcius
+#define NUM_IMU_CHANNELS      6  // only acc and IMU for now
+#define NUM_HIGHG_CHANNELS    3  // x/y/z
 
 #define I2CMUX_ADDR (0x70) 
 
 
-#define TLM_SEND_PERIOD   1000 // in scheduler ticks (should be 1ms)
+#define TLM_SEND_PERIOD   5000 // in scheduler ticks (should be 1ms)
 #define RX_TIMEOUT_PERIOD 500  // also in scheduler ticks
 
 
-// TODO: improve logfile system
+
+// TODO: improve logfile system, should be local to boards not here
 #define NUM_LOG_FILES         1
 #define LOGFILE0              "tlm00.csv"
 
@@ -38,5 +41,7 @@
 #define LOGID_GGA             2
 #define LOGID_RMC             3
 #define LOGID_BAR             4
+#define LOGID_ACC             5
+#define LOGID_IMU             6
 
 #endif
