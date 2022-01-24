@@ -20,7 +20,8 @@ acc = []
 
 for line in lines:
   parts = line.split(',')
-  
+  if len(parts)==1:
+    continue
   if parts[1].strip() == '5': # acc data
     tacc.append(int(parts[0].strip()))
     v = []
@@ -49,7 +50,7 @@ print("acc max time diff: {} seconds".format(acc_tdif/1000))
 print("imu max time diff: {} seconds".format(imu_tdif/1000))
 
 plt.figure()                                                                           
-plt.plot(tacc/1000, acc, marker='o')
+plt.plot(tacc/1000, acc)
 plt.title("high g accel data (g)")
 plt.xlabel("Time (seconds)")
 plt.ylabel("Acceleration (m/s/s)")
@@ -57,7 +58,7 @@ plt.legend(['x','y','z'])
 plt.show(block=False)
 
 plt.figure()
-plt.plot(timu/1000, imu[:,:3]/1000, marker='o')
+plt.plot(timu/1000, imu[:,:3]/1000)
 plt.title("low g accel data (g)")
 plt.xlabel("Time (seconds)")
 plt.ylabel("Acceleration (m/s/s)")
@@ -65,7 +66,7 @@ plt.legend(['x','y','z'])
 plt.show(block=False)
 
 plt.figure()
-plt.plot(timu/1000, imu[:,-3:], marker='o')
+plt.plot(timu/1000, imu[:,-3:])
 plt.title("gyro data (deg/s)")
 plt.xlabel("Time (seconds)")
 plt.ylabel("Angular velocity (deg/s)")
