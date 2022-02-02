@@ -119,9 +119,6 @@ void SERCOM0_3_Handler()
 // Serial transfer object for receiving data from TPM processor
 SerialTransfer myTransfer;
 
-// High G accel sensor object
-H3LIS100 accel = H3LIS100(12345);
-
 // capsule internal barometric pressure object
 // and struct for passing data through queue
 Adafruit_MPL3115A2 baro;
