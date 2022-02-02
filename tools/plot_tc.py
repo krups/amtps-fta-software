@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from scipy import ndimage, misc
 
 if len(sys.argv) < 2:
-    print("Need input file(s) as arg, need to be compressed iridium packets.")
+    print("Need input csv from CDH board")
     sys.exit(1)
 
 numInputs = len(sys.argv)-1
@@ -61,12 +61,13 @@ plt.xlabel('Time (seconds)')
 plt.ylabel('Temperature (deg. C)')
 plt.title("Temperature")
 
+'''
 plt.figure()
 plt.plot(prstax/1000, prs, linestyle='--', marker='o')
 plt.legend(["TC {}".format(i) for i in range(1,13)])
 plt.xlabel('Time (seconds)')
 plt.ylabel('Pressure (kPa)')
 plt.title("Pressure")
-
+'''
 
 plt.show()
