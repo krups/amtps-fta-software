@@ -13,11 +13,10 @@ data to an SD card at 100HZ from each
 #include <Adafruit_NeoPixel.h>
 #include <semphr.h>
 #include <SD.h>
-
+#include <SerialCommands.h>
 #include "ICM_20948.h" // Click here to get the library: http://librarymanager/All#SparkFun_ICM_20948_IMU
 
-
-#include "H3LIS100.h"
+#define DDSERIAL Serial
 
 #define DEBUG 1
 //#define DEBUG_ACC 1
@@ -29,7 +28,9 @@ data to an SD card at 100HZ from each
 #include "include/delay_helpers.h" // rtos delay helpers
 #include "include/config.h"        // project wide defs
 #include "include/packet.h"        // data packet defs
-#include "pins.h"                  // groundstation system pinouts
+//#include "src/PCInterface.h"
+#include "src/H3LIS100.h"
+#include "pins.h"                  // imu logger system pinouts
 
 Adafruit_NeoPixel pixel = Adafruit_NeoPixel(1, 8, NEO_GRB + NEO_KHZ800);
 
@@ -45,6 +46,7 @@ H3LIS100 accel = H3LIS100(12345);
 
 TaskHandle_t Handle_logTask; // sd card logging task
 TaskHandle_t Handle_dataTask; // 9 axis imu data collection task
+TaskHandle_t Handle_dumpTask; // dump file over serial task
 
 QueueHandle_t qAccData; // high g accelerometer data to be logged
 QueueHandle_t qImuData; // 6 axis log g imu data to be logged
@@ -53,6 +55,164 @@ QueueHandle_t qImuData; // 6 axis log g imu data to be logged
 SemaphoreHandle_t dbSem; // serial debug logging (Serial)
 SemaphoreHandle_t i2c1Sem; // i2c port 1 access semapho
 
+void printDirectory(SerialCommands* sender, File dir, int numTabs);
+
+void setLED(uint8_t r, uint8_t g, uint8_t b)
+{
+  pixel.setPixelColor(0, pixel.Color(r,g,b)); // white to signify mode
+  pixel.show();
+}
+
+void initSD(SerialCommands* sender)
+{
+	// list files on SD card
+	// sender->GetSerial()->print("Initializing SD card...");
+  if (!SD.begin(PIN_SD_CS)) {
+    #if DEBUG
+    sender->GetSerial()->println("initialization failed. Things to check:");
+    sender->GetSerial()->println("1. is a card inserted?");
+    sender->GetSerial()->println("2. is your wiring correct?");
+    sender->GetSerial()->println("3. did you change the chipSelect pin to match your shield or module?");
+    sender->GetSerial()->println("Note: press reset or reopen this serial monitor after fixing your issue!");
+    #endif
+    while (true){
+      setLED(0,0,0);
+      myDelayMs(500);
+      setLED(100,100,100);
+      myDelayMs(500);
+    }
+  }
+}
+
+// remove files on SD card
+void cmd_rm(SerialCommands* sender)
+{
+  initSD(sender);
+  File root = SD.open("/");
+  clearFiles(sender, root);
+  root.close();
+  sender->GetSerial()->println();
+}
+
+// list files on SD card
+void cmd_ls(SerialCommands* sender)
+{
+  initSD(sender);
+  File root = SD.open("/");
+  printDirectory(sender, root, 0);
+  root.close();
+  sender->GetSerial()->println();
+}
+
+void cmd_dump(SerialCommands* sender)
+{
+	//Note: Every call to Next moves the pointer to next parameter
+
+	char* file_str = sender->Next();
+	if (file_str == NULL)
+	{
+		sender->GetSerial()->println("Need filename as argument");
+		return;
+	}
+	
+	initSD(sender);
+  
+  File dataFile = SD.open(file_str);
+  if (dataFile) {
+    while (dataFile.available()) {
+      sender->GetSerial()->write(dataFile.read());
+    }
+    dataFile.close();
+  } else {
+    sender->GetSerial()->print("error opening ");
+    sender->GetSerial()->println(file_str);
+  }
+  sender->GetSerial()->println();
+}
+
+void clearFiles(SerialCommands* sender, File dir) {
+
+  while (true) {
+    File entry =  dir.openNextFile();
+    if (! entry) {
+      // no more files
+      break;
+    }
+    if (entry.isDirectory()) {
+      clearFiles(sender, entry);
+    } else {
+      SD.remove(entry.name());
+    }
+  }
+}
+
+
+void printDirectory(SerialCommands* sender, File dir, int numTabs) {
+
+  while (true) {
+    File entry =  dir.openNextFile();
+    if (! entry) {
+      // no more files
+      break;
+    }
+    for (uint8_t i = 0; i < numTabs; i++) {
+      sender->GetSerial()->print('\t');
+    }
+    sender->GetSerial()->print(entry.name());
+    if (entry.isDirectory()) {
+      sender->GetSerial()->println("/");
+      printDirectory(sender, entry, numTabs + 1);
+    } else {
+      // files have sizes, directories do not
+      sender->GetSerial()->print("\t\t");
+      sender->GetSerial()->println(entry.size(), DEC);
+    }
+    entry.close();
+  }
+}
+
+//This is the default handler, and gets called when no other command matches. 
+void cmd_unrecognized(SerialCommands* sender, const char* cmd)
+{
+  sender->GetSerial()->print("Unrecognized command [");
+  sender->GetSerial()->print(cmd);
+  sender->GetSerial()->println("]");
+}
+
+char serial_command_buffer_[32];
+SerialCommands serial_commands_(&DDSERIAL, serial_command_buffer_, sizeof(serial_command_buffer_), "\r\n", " ");
+SerialCommand cmd_ls_("ls", cmd_ls);
+SerialCommand cmd_dump_("dump", cmd_dump);
+SerialCommand cmd_rm_("rm", cmd_rm);
+
+
+static void dumpThread( void *pvParameters )
+{
+  #ifdef DEBUG_DUMP
+  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+    Serial.println("Data dump thread started");
+    xSemaphoreGive( dbSem );
+  }
+  #endif
+  
+  DDSERIAL.begin(115200);
+  
+  serial_commands_.SetDefaultHandler(cmd_unrecognized);
+	serial_commands_.AddCommand(&cmd_ls_);
+	serial_commands_.AddCommand(&cmd_rm_);
+	serial_commands_.AddCommand(&cmd_dump_);
+  
+  while (1) {
+    serial_commands_.ReadSerial();
+    if( digitalRead(PC_BOOT_PIN) == LOW ){
+      myDelayMs(1000);
+      if( digitalRead(PC_BOOT_PIN) == LOW )
+        NVIC_SystemReset();
+    }
+  }
+
+  vTaskDelete( NULL ); 
+}
 
 /**********************************************************************************
 /**********************************************************************************
@@ -409,6 +569,8 @@ void setup() {
   pinMode(LIS_INT1, INPUT);
   pinMode(LIS_INT2, INPUT);
   
+  pinMode(PC_BOOT_PIN, INPUT_PULLUP);
+  
   WIRE_PORT.begin();
   WIRE_PORT.setClock(800000);
   
@@ -419,14 +581,11 @@ void setup() {
   SPI.begin();
   SPI.setClockDivider(SPI_CLOCK_DIV8);
   
-  //attachInterrupt(digitalPinToInterrupt(ICM_INT), icmISR, RISING); // Set up a falling interrupt
-  
   delay(5000);
   
-  // TODO: configure interrupt pins for acc and imu so 
-  //       we can get accurate measurements at a known sample rate
-  
+  #ifdef DEBUG
   SERIAL.println("Starting...");
+  #endif
 
   // CREATE RTOS QUEUES 
   // high g accel data queue
@@ -447,7 +606,9 @@ void setup() {
   }
   // should take action if not all queues were created properly
   
+  #ifdef DEBUG
   SERIAL.println("Created queues...");
+  #endif
   
   // SETUP RTOS SEMAPHORES
   // setup debug serial log semaphore
@@ -463,8 +624,9 @@ void setup() {
       xSemaphoreGive( ( i2c1Sem ) );  // make available
   }
   
+  #ifdef DEBUG
   SERIAL.println("Created semaphores...");
-
+  #endif
   
   initializeICM();
   
@@ -486,9 +648,30 @@ void setup() {
   /**************
   * CREATE TASKS
   **************/
-  xTaskCreate(logThread, "SD Logging", 1024, NULL, tskIDLE_PRIORITY + 3, &Handle_logTask);
-  xTaskCreate(dataThread, "IMU + ACC", 2000, NULL, tskIDLE_PRIORITY + 2, &Handle_dataTask);
-  //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 4, &Handle_monitorTask);
+  bool pcdump = false;
+  
+  if( digitalRead(PC_BOOT_PIN) == LOW ){
+    bool stable = true;
+    for( int i=0; i<10; i++ ){
+      if( digitalRead(PC_BOOT_PIN) == HIGH ){
+        stable = false;
+        break;
+      }
+    }
+    if( stable ){
+      pcdump = true;
+    }
+  } 
+  
+  if( pcdump ){
+    pixel.setPixelColor(0, pixel.Color(75,75,75)); // white to signify mode
+    pixel.show();
+    
+    xTaskCreate(dumpThread, "Data dump", 1024, NULL, tskIDLE_PRIORITY + 2, &Handle_dumpTask);
+  } else {
+    xTaskCreate(logThread, "SD Logging", 1024, NULL, tskIDLE_PRIORITY + 3, &Handle_logTask);
+    xTaskCreate(dataThread, "IMU + ACC", 2000, NULL, tskIDLE_PRIORITY + 2, &Handle_dataTask);
+  }
   
   // start scheduler
   vTaskStartScheduler();

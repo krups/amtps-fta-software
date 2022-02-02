@@ -15,4 +15,6 @@
 
 #define PIN_SD_CS     10
 
+#define PC_BOOT_PIN A4
+
 #endif
