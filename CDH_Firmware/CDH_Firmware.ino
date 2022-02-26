@@ -20,15 +20,8 @@
 #include <Servo.h>
 #include "wiring_private.h"
 
-#include <Adafruit_BNO055.h>
-#include <utility/imumaths.h>
 
-#define CO2SERVO_POS_ACT  17
-#define CO2SERVO_POS_HOME 150
-
-Servo co2servo;
-
-#define DEBUG 1 // usb serial debug switch
+//#define DEBUG 1 // usb serial debug switch
 #ifdef DEBUG
   //#define DEBUG_GPS 1 // print raw gga to serial 
   //#define DEBUG_QUEUE 1 // print info on log queue operations
@@ -37,7 +30,8 @@ Servo co2servo;
   #define DEBUG_IRD 1
   //#define DEBUG_LOG 1
   #define DEBUG_PAR 1
-  //#define DEBUG_RAD 1
+  #define DEBUG_RAD 1
+  //#define DEBUG_TPMS_TRANSFER
 #endif
 
 bool sendPackets = 0;
@@ -48,6 +42,7 @@ bool sendPackets = 0;
 #include "include/delay_helpers.h" // rtos delay helpers
 #include "include/config.h"        // project wide defs
 #include "include/packet.h"        // packet definitions
+#include "include/commands.h"      // command spec
 #include "pins.h"                  // CDH system pinouts
 
 // Serial 2
@@ -123,9 +118,6 @@ SerialTransfer myTransfer;
 // and struct for passing data through queue
 Adafruit_MPL3115A2 baro;
 
-// Check I2C device address and correct line below (by default address is 0x29 or 0x28)
-//                                   id, address
-Adafruit_BNO055 bno = Adafruit_BNO055(-1, 0x28);
 
 // freertos task handles
 TaskHandle_t Handle_tpmTask; // data receive from TPM subsystem task
@@ -165,6 +157,11 @@ ArduinoNmeaParser parser(onRmcUpdate, onGgaUpdate);
 
 // IRIDIUM MODEM OBJECT
 IridiumSBD modem(SERIAL_IRD);
+
+// Parachute C02 servo setup
+#define CO2SERVO_POS_ACT  17
+#define CO2SERVO_POS_HOME 150
+Servo co2servo;
 
 void onRmcUpdate(nmea::RmcData const rmc)
 {
@@ -389,7 +386,7 @@ static void gpsThread( void *pvParameters )
       xSemaphoreGive( gpsSerSem );
     }
     
-    taskYIELD();
+    myDelayMs(20);
   }
   
   vTaskDelete( NULL );  
@@ -629,7 +626,7 @@ static void irdThread( void *pvParameters )
       }
     }
     
-    myDelayMs(1000);
+    myDelayMs(50);
     
   } // end task loop
   
@@ -645,7 +642,7 @@ static void irdThread( void *pvParameters )
 static void tpmThread( void *pvParameters )
 {
 
-  #ifdef DEBUG_TPM
+  #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
     Serial.println("TPM comms thread started");
     xSemaphoreGive( dbSem );
@@ -659,7 +656,7 @@ static void tpmThread( void *pvParameters )
   
   while(1) {
     
-    //myDelayMs(10);
+    myDelayMs(100);
     
     int result = 0;
     
@@ -673,6 +670,14 @@ static void tpmThread( void *pvParameters )
       // followed by the full packet of actual data we want...
       // .....
       if( myTransfer.available() ){
+      
+        #ifdef DEBUG_TPMS_TRANSFER
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          Serial.println("TPM:  got serial transfer for TPMS processor");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+      
         uint16_t recSize = 0;
         uint8_t type; // what type of data is being received
         recSize = myTransfer.rxObj(type, recSize);
@@ -747,6 +752,7 @@ static void tpmThread( void *pvParameters )
     
     }
     
+    //taskYIELD();
   }
   
   vTaskDelete( NULL );  
@@ -759,6 +765,9 @@ static void tpmThread( void *pvParameters )
 /**********************************************************************************
  * sd card logging thread
 */
+
+//static uint8_t logRingBuffer[CDH_LOGBUFFERSIZE];
+
 static void logThread( void *pvParameters )
 {
   static bool ready = false;
@@ -953,6 +962,7 @@ static void logThread( void *pvParameters )
     logfile.close();
     
     taskYIELD();
+    //myDelayMs(10);
   }
   
   vTaskDelete( NULL );  
@@ -983,7 +993,7 @@ static void parThread( void *pvParameters )
   while(1) {
     // peek at gga and pressure queues to see if activation criteria have been met
     
-    myDelayMs(100);
+    myDelayMs(50);
     
     if (deployed) continue;
     
@@ -1062,6 +1072,7 @@ static void parThread( void *pvParameters )
 #define SBUF_SIZE 240
 uint8_t rbuf[RBUF_SIZE];
 char sbuf[SBUF_SIZE];
+char printbuf[100];
 
 static void radThread( void *pvParameters )
 {
@@ -1070,6 +1081,8 @@ static void radThread( void *pvParameters )
   tlm_t dataOut;
   nmea::GgaData ggaData;
   nmea::RmcData rmcData;
+  tc_t tmpData;
+  prs_t prsData;
   bar_t barData; 
   
     /* 0: waiting for +OK from reset
@@ -1098,9 +1111,9 @@ static void radThread( void *pvParameters )
   //SERIAL_LOR.print("AT+RESET\r\n");
   //SERIAL_LOR.flush();
   
-  #ifdef DEBUG_RAD
+  #ifdef DEBUG_RAD_VERBOSE
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-    SERIAL.println("Reset radio");
+    SERIAL.println("LORA: Reset radio");
     xSemaphoreGive( dbSem );
   }
   #endif
@@ -1109,15 +1122,12 @@ static void radThread( void *pvParameters )
   memset(rbuf, 0, RBUF_SIZE);
   memset(sbuf, 0, SBUF_SIZE);
   
-  #ifdef DEBUG_RAD
+  #ifdef DEBUG_RAD_VERBOSE
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-    SERIAL.println("zerod buffers");
+    SERIAL.println("LORA: zerod buffers");
     xSemaphoreGive( dbSem );
   }
   #endif
-  
-  char buff[40];
-
   
   while(1) {
     // check the data source queue and see if there is something to send
@@ -1139,37 +1149,40 @@ static void radThread( void *pvParameters )
       int len = sprintf(sbuf, "AT+ADDRESS=1\r\n");
       SERIAL_LOR.write(sbuf, len);
       state = 2;
-      #ifdef DEBUG_RAD
+      #ifdef DEBUG_RAD_VERBOSE
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        Serial.println("sent at+address, setting state to 2");
+        Serial.println("LORA: sent at+address, setting state to 2");
         xSemaphoreGive( dbSem );
       }
       #endif
-      taskYIELD();
+      //taskYIELD();
+      myDelayMs(10);
     }
     else if( state == 3 ){
       int len = sprintf(sbuf, "AT+NETWORKID=1\r\n");
       SERIAL_LOR.write(sbuf, len);
       state = 4;
-      #ifdef DEBUG_RAD
+      #ifdef DEBUG_RAD_VERBOSE
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        Serial.println("sent at+networkid, setting state to 4");
+        Serial.println("LORA: sent at+networkid, setting state to 4");
         xSemaphoreGive( dbSem );
       }
       #endif
-      taskYIELD();
+      myDelayMs(10);
+      //taskYIELD();
     }
     else if( state == 5 ){
-      int len = sprintf(sbuf, "AT+PARAMETER=12,4,1,7\r\n"); // recommended for more than 3km
+      int len = sprintf(sbuf, "AT+PARAMETER=10,7,1,7\r\n"); // less than 3km
       SERIAL_LOR.write(sbuf, len);
       state = 6;
-      #ifdef DEBUG_RAD
+      #ifdef DEBUG_RAD_VERBOSE
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        Serial.println("sent at+param, setting state to 6");
+        Serial.println("LORA: sent at+param, setting state to 6");
         xSemaphoreGive( dbSem );
       }
       #endif
-      taskYIELD();
+      myDelayMs(10);
+      //taskYIELD();
     }
     
     if( xTaskGetTickCount() - lastSendTime > TLM_SEND_PERIOD && state == 7){
@@ -1183,7 +1196,7 @@ static void radThread( void *pvParameters )
           
           #ifdef DEBUG_QUEUE
           if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-            Serial.println("lora: peeked at GGA data!");
+            Serial.println("LORA: peeked at GGA data!");
             xSemaphoreGive( dbSem );
           }
           #endif
@@ -1198,7 +1211,7 @@ static void radThread( void *pvParameters )
           
           #ifdef DEBUG_QUEUE
           if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-            Serial.println("lora: peeked at RMC data!");
+            Serial.println("LORA: peeked at RMC data!");
             xSemaphoreGive( dbSem );
           }
           #endif
@@ -1214,12 +1227,46 @@ static void radThread( void *pvParameters )
           
           #ifdef DEBUG_QUEUE
           if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-            Serial.println("lora: peeked at RMC data!");
+            Serial.println("LORA: peeked at RMC data!");
             xSemaphoreGive( dbSem );
           }
           #endif
         } 
       }
+      
+      // peek at tc data
+      if( qTmpData != NULL ) {
+        if( xQueuePeek( qTmpData, &tmpData, (TickType_t) 2000 ) == pdPASS) {
+          dataOut.tc.t = tmpData.t;
+          for( int i=0; i<NUM_TC_CHANNELS; i++ ){
+            dataOut.tc.data[i] = tmpData.data[i];
+          }
+          
+          #ifdef DEBUG_QUEUE
+          if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+            Serial.println("LORA: peeked at TC data!");
+            xSemaphoreGive( dbSem );
+          }
+          #endif
+        }
+      } 
+      
+      // peek at tc data
+      if( qPrsData != NULL ) {
+        if( xQueuePeek( qPrsData, &prsData, (TickType_t) 2000 ) == pdPASS) {
+          dataOut.prs.t = prsData.t;
+          for( int i=0; i<NUM_PRS_CHANNELS; i++ ){
+            dataOut.prs.data[i] = prsData.data[i];
+          }
+          
+          #ifdef DEBUG_QUEUE
+          if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+            Serial.println("LORA: peeked at PRS data!");
+            xSemaphoreGive( dbSem );
+          }
+          #endif
+        }
+      } 
       
       // check parachute deploy status
       bool dep = false;
@@ -1235,32 +1282,12 @@ static void radThread( void *pvParameters )
         xSemaphoreGive( sigSem );
       }
       
-      dataOut.t = xTaskGetTickCount();
-      /*dataOut.lat = 37.1838432;
-      dataOut.lon = -84.824233;
-      dataOut.vel = 1029.235;
-      dataOut.alt_gps = 1200.92;
-      dataOut.alt_bar = 1190.32;
-      dataOut.barp = 995.127;
-      dataOut.tmp = 23.81;
-      dataOut.irsig = 2;
-      dataOut.pardep = 1;
-      */
-      dataOut.thread_status[0] = 0;
-      dataOut.thread_status[1] = 0;
-      dataOut.thread_status[2] = 0;
-      dataOut.thread_status[3] = 1;
-      dataOut.thread_status[4] = 0;
-      dataOut.thread_status[5] = 0;
-      dataOut.thread_status[6] = 0;
-      dataOut.thread_status[7] = 0;
-      dataOut.thread_status[8] = 0;
-      dataOut.thread_status[9] = 0;      
+      dataOut.t = xTaskGetTickCount(); 
       
       const int dataSize = sizeof(tlm_t);
-      sprintf(sbuf, "AT+SEND=2,%d,", dataSize);
+      sprintf(sbuf, "AT+SEND=2,%d,", dataSize); // where 2 is the address
       int pre = strlen(sbuf);
-      
+         
       // TODO: can we embed binary data ?????
       // now copy binary data from struct to send buffer
       memcpy(&sbuf[pre], (void*)&dataOut, dataSize);
@@ -1272,8 +1299,10 @@ static void radThread( void *pvParameters )
       
       #ifdef DEBUG_RAD
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        SERIAL.print("sending radio binary packet: ");
-        //SERIAL.write(sbuf, pre+dataSize+3);
+        SERIAL.print("sending radio binary packet of size ");
+        SERIAL.println(pre+dataSize+2);
+        SERIAL.print("actual data was (bytes): ");
+        SERIAL.println(dataSize);
         //SERIAL.println("DONE");
         xSemaphoreGive( dbSem );
       }
@@ -1288,7 +1317,8 @@ static void radThread( void *pvParameters )
       
       // go to state 8 so that we wait for a response
       state = 8;
-      taskYIELD();
+      myDelayMs(100);
+      //taskYIELD();
     }
     
   
@@ -1300,7 +1330,7 @@ static void radThread( void *pvParameters )
     unsigned long timeoutStart = 0;
     if( SERIAL_LOR.peek() == '+' ){
       
-      #ifdef DEBUG_RAD
+      #ifdef DEBUG_RAD_VERBOSE
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
         SERIAL.println("saw a +");
         xSemaphoreGive( dbSem );
@@ -1338,9 +1368,9 @@ static void radThread( void *pvParameters )
         }
         #endif
       } else if (!timeout && eol) {
-        #ifdef DEBUG_RAD
+        #ifdef DEBUG_RAD_VERBOSE
         if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-          SERIAL.println("Radio got packet!");
+          SERIAL.println("Radio got message!");
           xSemaphoreGive( dbSem );
         }
         #endif
@@ -1359,7 +1389,7 @@ static void radThread( void *pvParameters )
         
         
         int eqpos = 1;
-        while( rbuf[eqpos] != '=' &&  eqpos < pos){
+        while( ( rbuf[eqpos] != '=' ) &&  ( eqpos < pos) ){
           eqpos++;
         }
         
@@ -1368,7 +1398,6 @@ static void radThread( void *pvParameters )
           if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
             SERIAL.print("Received ");
             SERIAL.write(rbuf, pos);
-            SERIAL.println();
             xSemaphoreGive( dbSem );
           }
           #endif
@@ -1376,7 +1405,7 @@ static void radThread( void *pvParameters )
           if( state < 7 ){
             state ++;
             if( state == 7 ){
-              #ifdef DEBUG_RAD
+              #ifdef DEBUG_RAD_VERBOSE
               if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
                 SERIAL.println("STATE = 7, successfully configured radio!");
                 xSemaphoreGive( dbSem );
@@ -1385,8 +1414,8 @@ static void radThread( void *pvParameters )
               taskYIELD();
             }
           } else if( state > 7 ){
-            #ifdef DEBUG_RAD
             state = 7;
+            #ifdef DEBUG_RAD_VERBOSE
             if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
               SERIAL.println("STATE was 8, received +OK from a data send operation!");
               xSemaphoreGive( dbSem );
@@ -1397,27 +1426,94 @@ static void radThread( void *pvParameters )
           
         } else {
           // found an '=', parse rest of message
-          #ifdef DEBUG
-          if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-            SERIAL.print("Received ");
-            SERIAL.write(rbuf, pos);
-            xSemaphoreGive( dbSem );
-          }
-          #endif
-          
           //
           // TODO: parse the packet and fill the rxtlm_t struct with data
           //       and send to the logging and display queues
           // 
           
+          // check if its a receive message
+          if( rbuf[0]=='+' &&
+              rbuf[1]=='R' &&
+              rbuf[2]=='C' &&
+              rbuf[3]=='V'){
+            
+            // parse data
+            // example rx string: +RCV=50,5,HELLO,-99,40
+            const char *comma = ",";
+            char *token;
+            char *data;
+            int rssi;
+            int snr;
+            int addr = -1;
+            int datalen = -1;
+            
+            // parse target address
+            token = strtok((char *) &rbuf[5], comma);
+            addr = atoi(token);
+            
+            // extract data length
+            token = strtok(NULL, comma);
+            datalen = atoi(token);
+            
+            data = (char *)&rbuf[5];
+            while( *(++data) != ',');
+            while( *(++data) != ',');
+            
+            // get pointer to start of data 
+            //data = strtok(NULL, comma);
+            
+            // get the rssi
+            token = strtok((char *) &rbuf[8+datalen], comma);
+            token = strtok(NULL, comma);
+            rssi = atoi(token);
+            
+            // get the SNR
+            token = strtok(NULL, comma);
+            snr = atoi(token);
+            
+            
+            #ifdef DEBUG
+            int pblen = sprintf(printbuf, "Received %d bytes from address %d\n  rssi: %d, snr: %d\n", datalen, addr, rssi, snr);
+            if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+              SERIAL.write(printbuf, pblen);
+              //SERIAL.write(data, datalen);
+              xSemaphoreGive( dbSem );
+            }
+            #endif
+            
+            // check what the data was
+            switch (data[0]) {
+              case CMDID_DEPLOY_DROGUE:
+                #if DEBUG
+                if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+                  SERIAL.println("Got deploy drogue command");
+                  xSemaphoreGive( dbSem );
+                }
+                #endif
+                break;
+              case CMDID_FIRE_PYRO:
+                #if DEBUG
+                if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+                  SERIAL.println("Got fire pyro command");
+                  xSemaphoreGive( dbSem );
+                }
+                #endif
+                break;
+            }
+            
+             
+          }
         }
       }
     } 
-    taskYIELD();
+    //taskYIELD();
+    myDelayMs(100);
   }
   
   vTaskDelete( NULL );  
 }
+
+
 
 
 /**********************************************************************************/
@@ -1587,13 +1683,13 @@ void setup() {
   /**************
   * CREATE TASKS
   **************/
+  xTaskCreate(tpmThread, "TPM Communication", 512, NULL, tskIDLE_PRIORITY, &Handle_tpmTask);
   xTaskCreate(logThread, "SD Logging", 1024, NULL, tskIDLE_PRIORITY, &Handle_logTask);
   xTaskCreate(gpsThread, "GPS Reception", 512, NULL, tskIDLE_PRIORITY, &Handle_gpsTask);
   xTaskCreate(irdThread, "Iridium thread", 512, NULL, tskIDLE_PRIORITY, &Handle_irdTask);
-  xTaskCreate(parThread, "Parachute Deployment", 512, NULL, tskIDLE_PRIORITY, &Handle_parTask);
-  xTaskCreate(tpmThread, "TPM Communication", 512, NULL, tskIDLE_PRIORITY, &Handle_tpmTask);
+  xTaskCreate(parThread, "Parachute Deployment", 512, NULL, tskIDLE_PRIORITY+2, &Handle_parTask);
   xTaskCreate(barThread, "Capsule internals", 512, NULL, tskIDLE_PRIORITY, &Handle_barTask);
-  xTaskCreate(radThread, "Telem radio", 1024, NULL, tskIDLE_PRIORITY, &Handle_radTask);
+  xTaskCreate(radThread, "Telem radio", 1000, NULL, tskIDLE_PRIORITY, &Handle_radTask);
   //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 4, &Handle_monitorTask);
   
   // Start the RTOS, this function will never return and will schedule the tasks.

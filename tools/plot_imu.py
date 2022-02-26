@@ -55,7 +55,7 @@ plt.title("high g accel data (g)")
 plt.xlabel("Time (seconds)")
 plt.ylabel("Acceleration (m/s/s)")
 plt.legend(['x','y','z'])
-plt.show(block=False)
+#plt.show()
 
 plt.figure()
 plt.plot(timu/1000, imu[:,:3]/1000)
@@ -63,7 +63,7 @@ plt.title("low g accel data (g)")
 plt.xlabel("Time (seconds)")
 plt.ylabel("Acceleration (m/s/s)")
 plt.legend(['x','y','z'])
-plt.show(block=False)
+#plt.show()
 
 plt.figure()
 plt.plot(timu/1000, imu[:,-3:])
@@ -71,7 +71,7 @@ plt.title("gyro data (deg/s)")
 plt.xlabel("Time (seconds)")
 plt.ylabel("Angular velocity (deg/s)")
 plt.legend(['x','y','z'])
-plt.show(block=False)
+plt.show()
 
 
 #legend=['acc x', 'acc y', 'acc z', 'gyr x', 'gyr y', 'gyr z']

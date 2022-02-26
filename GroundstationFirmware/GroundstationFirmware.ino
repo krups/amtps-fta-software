@@ -9,288 +9,100 @@
 #include <U8g2lib.h>
 #include <Adafruit_I2CDevice.h>
 #include <Adafruit_I2CRegister.h>
+#include <Adafruit_NeoPixel.h>
 #include <FreeRTOS_SAMD21.h>
-#include <SerialTransfer.h>
+#include <SerialCommands.h>
 #include <semphr.h>
 #include <SD.h>
 
-#define DEBUG 1
-
-#define MAX_PAGES 3 // max pages of info on screen to scroll through
+//#define DEBUG 1
+//#define PRINT_RX_STATS 1
 
 #include "include/delay_helpers.h" // rtos delay helpers
 #include "include/config.h"        // project wide defs
 #include "include/packet.h"        // data packet defs
+#include "include/commands.h"      // command spec
 #include "pins.h"                  // groundstation system pinouts
 
-
-#define SCREEN_WIDTH 128 // OLED display width, in pixels
-#define SCREEN_HEIGHT 64 // OLED display height, in pixels
-
-// Declaration for an display
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-
 // freertos task handles
-TaskHandle_t Handle_logTask;
 TaskHandle_t Handle_radTask;
-TaskHandle_t Handle_lcdTask;
-TaskHandle_t Handle_monitorTask;
+TaskHandle_t Handle_serTask;
 
 // freeRTOS semaphores
-// shouldnt need any because the radio uses uart, the sd card uses spi and the display uses i2c
-//SemaphoreHandle_t i2csem; // data transmit to CDH semaphore
 SemaphoreHandle_t dbSem; // serial debug logging (Serial)
-//SemaphoreHandle_t i2c1Sem; // i2c port 1 access semaphore
-
-// freeRTOS queues
-QueueHandle_t qLogData; // data queue for sending recvd radio data to the sd card to be logged
-QueueHandle_t qDisData; // data queue for sending recvd radio data to the display
 
 #define SERIAL Serial
+#define SCSERIAL Serial
 #define RADIO_SERIAL Serial1
 
-/**********************************************************************************
- * SD logging task
-*/
-static void logThread( void *pvParameters )
-{
-  bool ready = false;
-  rxtlm_t tlmData;
-  File logfile; 
-  
-  #ifdef DEBUG
-  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-    SERIAL.println("SD Logging thread started");
-    xSemaphoreGive( dbSem );
-  }
-  #endif
-  
-  String filename = "TLM00.txt";
-  
-  // INIT CARD
-  while (!SD.begin(PIN_SD_CS)) {
-    #if DEBUG
-    if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-      SERIAL.println("ERROR: sd logging thread couldn't init sd card");
-      xSemaphoreGive( dbSem );
-    }
-    #endif
-    ready = false;
-    myDelayMs(1000);
-  } 
-  
-  #if DEBUG
-  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-    SERIAL.println("SD CARD INIT OK");
-    xSemaphoreGive( dbSem );
-  }
-  #endif
+// prototypes for serial commands
+void printDirectory(SerialCommands* sender, File dir, int numTabs);
 
-  // if we make it to hear, we are ready
-  ready = true;
-  
-  
-  // CREATE UNIQUE FILE NAME
-  for( uint8_t i=0; i < 100; i++) {
-    filename[3] = '0' + i/10;
-    filename[4] = '0' + i%10;
-    if (! SD.exists(filename)) {
-      break;
-    }
-  }
-  
-  while(1) {
-    
-    // check for log packet in queue and log to sd
-    // need to format data in one row with correct column names
-    
-    // if telem queue has been created successfully
-    if( qLogData != NULL ) {
-      if( xQueueReceive( qLogData, &tlmData, portMAX_DELAY ) == pdPASS) {
-        #ifdef DEBUG_VERBOSE
-        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-          SERIAL.println("sd log: received telem data!");
-          xSemaphoreGive( dbSem );
-        }
-        #endif
-        
-        // now we have telem data in tlmData
-        
-        // try to open logfile
-        logfile = SD.open(filename, FILE_WRITE);
-      
-        // logfile no good
-        if( ! logfile ) {
-          #if DEBUG
-          if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-            SERIAL.print("ERROR: sd logging thread couldn't open logfile for writing: ");
-            SERIAL.println(filename);
-            xSemaphoreGive( dbSem );
-          }
-          #endif
-        }       
-        else { // LOGFILE OPEN!
-          
-          // write telem data to file
-          logfile.print(tlmData.tlm.t);
-          logfile.print(", ");
-          logfile.print(tlmData.tlm.lat, 6);
-          logfile.print(", ");
-          logfile.print(tlmData.tlm.lon, 6);
-          logfile.print(", ");
-          logfile.print(tlmData.tlm.vel, 2);
-          logfile.print(", ");
-          logfile.print(tlmData.tlm.alt_gps, 2);
-          logfile.print(", ");
-          logfile.print(tlmData.tlm.alt_bar, 2);
-          logfile.print(", ");
-          logfile.print(tlmData.tlm.barp, 3);
-          logfile.print(", ");
-          logfile.print(tlmData.tlm.tmp, 2);
-          logfile.print(", ");
-          logfile.print(tlmData.tlm.irsig);
-          logfile.print(", ");
-          logfile.print(tlmData.tlm.pardep);
-          // TODO: log status codes for threads
-          logfile.print(", "); logfile.print(tlmData.rssi);
-          logfile.print(", "); logfile.println(tlmData.snr);
-        }
-        
-        logfile.close();
-      }
-    }
-    
-    taskYIELD();
-  }
-  
-  vTaskDelete( NULL );  
+char serial_command_buffer_[32]; // max received command length
+
+// serial command parser object
+SerialCommands serial_commands_(&SCSERIAL, serial_command_buffer_, sizeof(serial_command_buffer_), "\r\n", " ");
+
+
+// serial command handler for initiating a send of the C02 paraachute deploy
+void cmd_send_pdep(SerialCommands* sender)
+{
+  sender->GetSerial()->print("sending parachute deploy...");
+  // do work
 }
 
-/**********************************************************************************
- * Oled screen task
-*/
-static void oledThread( void *pvParameters )
+// serial command handler for initiating a send of the pyro cutter firing
+void cmd_send_pyro(SerialCommands* sender)
 {
-  rxtlm_t tlmData;
-  int pcount = 0;
-  
-  #ifdef DEBUG
-  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-    SERIAL.println("OLED thread started");
-    xSemaphoreGive( dbSem );
-  }
-  #endif
-  
-  
-  u8g2.begin();
-
-  #ifdef DEBUG
-  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-    SERIAL.println("OLED initialized");
-    xSemaphoreGive( dbSem );
-  }
-  #endif
-  
-  u8g2.clearBuffer();					// clear the internal memory
-  u8g2.setFontMode(1);
-  u8g2.setFont(u8g2_font_6x10_mr);	// choose a suitable font
-  u8g2.setCursor(0,10);				// set write position
-  u8g2.print("Hello World!");			// write something to the internal memory
-  u8g2.sendBuffer();					// transfer internal memory to the display
-  
-  
-  myDelayMs(2000); // Pause for 2 seconds
-  
-  uint8_t page = 0;
-  
-  while(1) {
-    SERIAL.println("oled loop");
-    // main telem display loop
-        
-    // check data queue for new data to display
-    if( qDisData != NULL ) {
-      if( xQueueReceive( qDisData, &tlmData, 500 ) == pdPASS) {
-        #ifdef DEBUG_VERBOSE
-        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-          SERIAL.println("oled thrd: received telem data!");
-          xSemaphoreGive( dbSem );
-        }
-        #endif
-        pcount++;
-      }
-        
-    }
-    
-    if( digitalRead(A3) == LOW ){
-      page = (page + 1) % MAX_PAGES;
-      SERIAL.println("page incremented");
-    }
-    if( digitalRead(A2) == LOW ){
-      page = (page - 1) % MAX_PAGES;
-      SERIAL.println("serial decremented");
-    }
-    
-    // put corresponding data on each page
-    if( page == 0 ){
-      
-      u8g2.clearBuffer();
-      u8g2.setFontMode(1);
-      u8g2.setFont(u8g2_font_6x10_mr);	// choose a suitable font
-      u8g2.setCursor(0,10);
-      u8g2.print(tlmData.tlm.lat, 5); 
-      u8g2.print(","); u8g2.println(tlmData.tlm.lon, 5);
-      u8g2.setCursor(0,20);
-      u8g2.print("Vel: "); u8g2.println(tlmData.tlm.vel, 1); u8g2.print(" m/s");
-      u8g2.setCursor(0,30);
-      u8g2.print("G alt: "); u8g2.println(tlmData.tlm.alt_gps, 1); u8g2.print(" m");
-      u8g2.setCursor(0,40);
-      u8g2.print("B alt: "); u8g2.println(tlmData.tlm.alt_bar, 1); u8g2.print(" m");
-      u8g2.setCursor(0,50);
-      u8g2.print("Prs: "); u8g2.println(tlmData.tlm.barp, 2); u8g2.print(" hPa");
-      u8g2.setCursor(0,60);
-      u8g2.print("Tmp: "); u8g2.println(tlmData.tlm.tmp, 1); u8g2.print(" C");
-      u8g2.setCursor(110,60);
-      u8g2.print(pcount);
-      u8g2.sendBuffer();
-      
-      
-    } else if( page == 1 ){
-      u8g2.clearBuffer();
-      u8g2.setFontMode(1);
-      u8g2.setFont(u8g2_font_6x10_mr);	// choose a suitable font
-      u8g2.setCursor(0,10);
-      u8g2.print("Ir. sig: "); u8g2.println(tlmData.tlm.irsig);
-      u8g2.setCursor(0,20);
-      u8g2.print("Par. dep: "); u8g2.println(tlmData.tlm.pardep);
-      u8g2.setCursor(110,60);
-      u8g2.print(pcount);
-      u8g2.sendBuffer();
-    } else if( page == 2 ){
-      u8g2.setCursor(100,60);
-      u8g2.print(pcount);
-      //show thread statuses
-      //tlmData.tlm.thread_status
-    }
-    
-    
-    myDelayMs(500);
-  }
-  
-  vTaskDelete( NULL );  
+  sender->GetSerial()->print("sending pyro cut command...");
+  // do work
 }
+
+
+// This is the default handler, and gets called when no other command matches. 
+void cmd_help(SerialCommands* sender, const char* cmd)
+{
+  sender->GetSerial()->print("Unrecognized command [");
+  sender->GetSerial()->print(cmd);
+  sender->GetSerial()->println("]");
+}
+
+SerialCommand cmd_pdep_("D", cmd_send_pdep); // deploy parachute command
+SerialCommand cmd_pyro_("C", cmd_send_pyro); // fire pyro cutters command
+
+
 
 /**********************************************************************************
  *  Radio task
 */
 #define RBUF_SIZE 300
 #define SBUF_SIZE 240
-static void radThread( void *pvParameters )
+
+class RYLR896 {
+public:
+  RYLR896() {};
+  static void thread( void *pvParam );
+  static uint8_t rbuf[RBUF_SIZE];
+  static char sbuf[SBUF_SIZE];
+  static char printbuf[1000];
+  static tlm_t rxtlm;
+};
+tlm_t RYLR896::rxtlm;
+char RYLR896::printbuf[1000];
+char RYLR896::sbuf[SBUF_SIZE];
+uint8_t RYLR896::rbuf[RBUF_SIZE];
+//void RYLR896::thread( void *pvParameters )
+
+
+//char printbuf[100];
+//char sbuf[SBUF_SIZE];
+//uint8_t rbuf[RBUF_SIZE];
+void RYLR896::thread( void *pvParameters )
+//void radioThread( void *pvParameters )
 {
-  uint8_t rbuf[RBUF_SIZE];
+
   tlm_t dat;
   rxtlm_t outDat;
-  char sbuf[SBUF_SIZE];
 
   /* 0: waiting for +OK from reset
      1: configuring address
@@ -302,6 +114,7 @@ static void radThread( void *pvParameters )
      7: ready
   */
   int state = 0;  
+
   
   #ifdef DEBUG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -342,7 +155,8 @@ static void radThread( void *pvParameters )
       state = 4;
     }
     else if( state == 5 ){
-      int len = sprintf(sbuf, "AT+PARAMETER=12,4,1,7\r\n"); // recommended for more than 3km
+      int len = sprintf(sbuf, "AT+PARAMETER=10,7,1,7\r\n"); // recommended for less than 3km
+      //int len = sprintf(sbuf, "AT+PARAMETER=12,4,1,7\r\n"); // recommended for more than 3km
       RADIO_SERIAL.write(sbuf, len);
       state = 6;
     }
@@ -352,13 +166,53 @@ static void radThread( void *pvParameters )
     bool eol = false;
     int pos = 0;
     bool timeout = false;
+    int sawComma = 0;
     unsigned long timeoutStart = 0;
+    int expectedDataLen = 0;
+    
+    char rbts[4]; // receive buffer text length i.e "127"
+    int rbtsLen = 0; // number of chars in rbts
+    int payloadSize = 0;
+
+    
     if( RADIO_SERIAL.peek() == '+' ){
+      //SERIAL.print("in peek '");
+      //SERIAL.write((char)RADIO_SERIAL.peek());
+    
       unsigned long timeoutStart = xTaskGetTickCount();
       while(!eol && !timeout && pos < RBUF_SIZE-1) {
+
         if( RADIO_SERIAL.available() ){
           rbuf[pos] = RADIO_SERIAL.read();
           if( pos > 1 ){
+           
+            // look for payload length in receive at command
+            // +RCV=50,5,HELLO,-99,40
+            if( sawComma == 1 ){
+              if( rbuf[pos] == ',' ){
+                sawComma = 2;
+                if( rbtsLen < 4 ){
+                  rbts[rbtsLen] = 0;
+                }
+                payloadSize = atoi(rbts);
+                
+              } else {
+                rbts[rbtsLen] = rbuf[pos];
+                rbtsLen++;
+              }
+            }
+            if( ( sawComma == 0) && ( rbuf[pos] == ',' ) ){
+              sawComma = 1;
+            }
+          
+            /*
+            if( rbuf[pos]=='\n' && rbuf[pos-1]=='\r' && sawComma==2 ){
+              memset(&rbuf[pos+1], 0, RBUF_SIZE-(pos+1));
+              eol = true;
+              Serial.println("saw eol");
+            }
+            */
+            
             if( rbuf[pos]=='\n' && rbuf[pos-1]=='\r' ){
               memset(&rbuf[pos+1], 0, RBUF_SIZE-(pos+1));
               eol = true;
@@ -369,7 +223,7 @@ static void radThread( void *pvParameters )
             break;
           }
         }
-        if( xTaskGetTickCount() - timeoutStart > 1000 ){
+        if( xTaskGetTickCount() - timeoutStart > 5000 ){
           memset(rbuf, 0, RBUF_SIZE);
           timeout = true;
         }
@@ -439,10 +293,6 @@ static void radThread( void *pvParameters )
           }
           #endif
           
-          //
-          // TODO: parse the packet and fill the rxtlm_t struct with data
-          //       and send to the logging and display queues
-          // 
           
           // check if its a receive message
           if( rbuf[0]=='+' &&
@@ -450,26 +300,120 @@ static void radThread( void *pvParameters )
               rbuf[2]=='C' &&
               rbuf[3]=='V'){
             
-            // parse data
-            memcpy((void*)&dat, &rbuf[10], 48);
-            outDat.tlm = dat;
-            outDat.rssi = -19;
-            outDat.snr = 30;
             
-            if( xQueueSend( qDisData, ( void * ) &outDat, ( TickType_t ) 200 ) != pdTRUE ) {
-              /* Failed to post the message, even after 100 ticks. */
-              #ifdef DEBUG
-              if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-                SERIAL.println("ERROR: failed to put telem data into queue");
-                xSemaphoreGive( dbSem );
+            #ifdef PRINT_RX_STATS
+            //int pblen = sprintf(printbuf, "Received %d bytes from address %d\n  rssi: %d, snr: %d\n", datalen, addr, rssi, snr);
+            if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+              //SERIAL.write(printbuf, pblen);
+              SERIAL.print("data: "); SERIAL.write(rbuf, pos);
+              SERIAL.println();
+              xSemaphoreGive( dbSem );
+            }
+            #endif
+            
+            // parse data
+            // example rx string: +RCV=50,5,HELLO,-99,40
+            const char *comma = ",";
+            char *token;
+            char *data;
+            int rssi;
+            int snr;
+            int addr = -1;
+            int datalen = -1;
+            int cc = 0;
+            
+            // find start of data chunk
+            int dataPos = 0;
+            while( dataPos < pos){
+              if( rbuf[dataPos] == ',' ){
+                cc++;
+                if( cc == 2 ){
+                  dataPos++;
+                  break;
+                }
+                  
               }
-              #endif
+              dataPos++;
+            }
+            
+            SERIAL.print("dataPos is ");
+            SERIAL.println(dataPos);
+            
+            // assume that data coming from the capsule 
+            // is a specific data structure for now
+            memcpy((void*)&rxtlm, (void *)&rbuf[dataPos], sizeof(tlm_t));
+            
+            // parse target address
+            token = strtok((char *) &rbuf[5], comma);
+            addr = atoi(token);
+            
+            // extract data length
+            token = strtok(NULL, comma);
+            datalen = atoi(token);
+            
+            // get pointer to start of data 
+            //data = strtok(NULL, comma);
+            
+            // get the rssi
+            token = strtok((char *) &rbuf[8+datalen], comma);
+            token = strtok(NULL, comma);
+            rssi = atoi(token);
+            
+            // get the SNR
+            token = strtok(NULL, comma);
+            snr = atoi(token);
+                      
+            
+            String latstr = String(rxtlm.lat);
+            String lonstr = String(rxtlm.lon);
+            String velstr = String(rxtlm.vel);
+            String alt_gpsstr = String(rxtlm.alt_gps);
+            String alt_barstr = String(rxtlm.alt_bar);
+            String barpstr = String(rxtlm.barp);
+            String tmpstr = String(rxtlm.tmp);
+            String tcstr = "";
+            for( int i=0; i<NUM_TC_CHANNELS; i++ ){
+              String istr = String(i+1);
+              String tstr = String(rxtlm.tc.data[i]);
+              tcstr += "\"tc" + istr + "\":" + tstr;
+              if( i < NUM_TC_CHANNELS-1 ){
+                tcstr += ",";
+              }
+            }
+            String prstr = "";
+            for( int i=0; i<NUM_PRS_CHANNELS; i++ ){
+              String istr = String(i+1);
+              String pstr = String(rxtlm.prs.data[i]);
+              prstr += "\"prs" + istr + "\":" + pstr;
+              if( i < NUM_PRS_CHANNELS-1 ){
+                prstr += ",";
+              }
+            }
+            
+            // print out all received data in JSON format
+            int dlen = sprintf(printbuf, "{\"time\": %d,\"lat\":%s,\"lon\":%s,\"vel\":%s,\"alt_gps\":%s,\"alt_bar\":%s,\"barp\":%s,\"tmp\":%s,\"irsig\":%d,\"pardep\":%d,\"tc\":{%s},\"prs\":{%s}}",
+                   rxtlm.t,
+                   latstr.c_str(),
+                   lonstr.c_str(),
+                   velstr.c_str(),
+                   alt_gpsstr.c_str(),
+                   alt_barstr.c_str(),
+                   barpstr.c_str(),
+                   tmpstr.c_str(),
+                   rxtlm.irsig,
+                   (uint8_t)rxtlm.pardep,
+                   tcstr.c_str(),
+                   prstr.c_str());
+            
+
+
+            if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+              SERIAL.write(printbuf, dlen);
+              SERIAL.println();
+              xSemaphoreGive( dbSem );
             }
             
             
-            SERIAL.print("GOT DATA: ");
-            SERIAL.write(rbuf, pos);
-            SERIAL.println("DONE");
             
           }
           
@@ -483,38 +427,35 @@ static void radThread( void *pvParameters )
   vTaskDelete( NULL );  
 }
 
+RYLR896 radio;
+
+void serialTask( void *param ){
+
+  serial_commands_.SetDefaultHandler(cmd_help);
+	serial_commands_.AddCommand(&cmd_pdep_);
+	serial_commands_.AddCommand(&cmd_pyro_);
+  
+  while (1) {
+    serial_commands_.ReadSerial();
+  }
+  
+  vTaskDelete (NULL);
+
+}
+
 void setup() {
   SERIAL.begin(115200);
   delay(10);
   RADIO_SERIAL.begin(115200);
   delay(10);
   
-  delay(3000);
+  delay(4000);
   
-  pinMode(A2, INPUT_PULLUP);
-  pinMode(A3, INPUT_PULLUP);
-  
+  #if DEBUG
   SERIAL.println("Starting...");
+  #endif
 
   // CREATE RTOS QUEUES 
-  // temperature data queue
-  qDisData = xQueueCreate( 2, sizeof( struct rxtlm_t ) );
-  if( qDisData == NULL ) {
-    /* Queue was not created and must not be used. */
-    #if DEBUG
-    SERIAL.println("Failed to create qDisData queue");
-    #endif
-  }
-  // pressure data queue
-  qLogData = xQueueCreate( 2, sizeof( struct rxtlm_t ) );
-  if( qLogData == NULL ) {
-    /* Queue was not created and must not be used. */
-    #if DEBUG
-    SERIAL.println("Failed to create qLogData queue");
-    #endif
-  }
-  
-  SERIAL.println("Created queues...");
   
   // setup debug serial log semaphore
   if ( dbSem == NULL ) {
@@ -523,18 +464,16 @@ void setup() {
       xSemaphoreGive( ( dbSem ) );  // make available
   }
   
-  SERIAL.println("Created semaphores...");
-  
   /**************
   * CREATE TASKS
   **************/
-  //xTaskCreate(logThread, "SD Logging", 1024, NULL, tskIDLE_PRIORITY + 2, &Handle_logTask);
-  xTaskCreate(radThread, "Radio Control", 800, NULL, tskIDLE_PRIORITY + 2, &Handle_radTask);
-  xTaskCreate(oledThread, "OLED Control", 1024, NULL, tskIDLE_PRIORITY + 3, &Handle_lcdTask);
-  
+  xTaskCreate(RYLR896::thread, "Radio Control", 1000, NULL, tskIDLE_PRIORITY + 2, &Handle_radTask);
+  xTaskCreate(serialTask, "Serial Interface", 1000, NULL, tskIDLE_PRIORITY + 2, &Handle_serTask);
   //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 4, &Handle_monitorTask);
-
+  
+  #if DEBUG
   SERIAL.println("Created tasks...");
+  #endif
   
   delay(100);
   

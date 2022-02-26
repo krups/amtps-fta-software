@@ -9,6 +9,7 @@
 #define PTYPE_IMU 4
 #define PTYPE_TMP 5
 #define PTYPE_PRS 6
+#define PTYPE_TLM 7
 
 // type PTYPE_ACC
 struct acc_t {
@@ -40,7 +41,7 @@ struct bar_t {
   float prs;
   float alt;
   float tmp;
-};
+}; 
 
 // type PTYPE_TELEM
 struct tlm_t {
@@ -52,9 +53,11 @@ struct tlm_t {
   float alt_bar; // barometer altitude
   float barp;    // capsule internal barometric pressure
   float tmp;     // capsule internal temperature
+  float bat;     // battery voltage
   int   irsig;   // iridium signal strength
   bool  pardep;  // parachute deployed yes/no
-  uint8_t thread_status[10]; // status codes for theads
+  tc_t tc;      // thermocouple data
+  prs_t prs;     // external pressure sensors
 };
 
 // not a packet type, used in the groundstation firmware to hold the extra radio receive info

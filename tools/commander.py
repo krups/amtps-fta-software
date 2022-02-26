@@ -6,7 +6,7 @@ import time
 import serial
 
 if len(sys.argv) < 3:
-  print("Usage: {} serial_port command".format(sys.argv[0]))
+  print("Usage: {} /path/to/serial_port command".format(sys.argv[0]))
 
 ser = serial.Serial(sys.argv[1], 115200, timeout=0.5)  # open serial port
 cmd = sys.argv[2]
@@ -20,7 +20,7 @@ if ser.is_open:
   sio.flush()
   
   while True:
-    line = sio.readline()
+    line = sio.readline()    
     print(line,end='')
     if len(line)==0:
       break

@@ -30,6 +30,7 @@
 #define TLM_SEND_PERIOD   5000 // in scheduler ticks (should be 1ms)
 #define RX_TIMEOUT_PERIOD 500  // also in scheduler ticks
 
+#define CDH_LOGBUFFERSIZE 10000
 
 
 // TODO: improve logfile system, should be local to boards not here
