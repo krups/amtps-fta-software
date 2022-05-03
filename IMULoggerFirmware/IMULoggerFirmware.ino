@@ -141,7 +141,9 @@ void clearFiles(SerialCommands* sender, File dir) {
     if (entry.isDirectory()) {
       clearFiles(sender, entry);
     } else {
-      SD.remove(entry.name());
+      if ( strcmp(entry.name(), "CONFIG.TXT") != ){
+        SD.remove(entry.name());
+      }
     }
   }
 }

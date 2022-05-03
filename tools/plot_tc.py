@@ -61,13 +61,13 @@ plt.xlabel('Time (seconds)')
 plt.ylabel('Temperature (deg. C)')
 plt.title("Temperature")
 
-'''
+
 plt.figure()
 plt.plot(prstax/1000, prs, linestyle='--', marker='o')
 plt.legend(["TC {}".format(i) for i in range(1,13)])
 plt.xlabel('Time (seconds)')
 plt.ylabel('Pressure (kPa)')
 plt.title("Pressure")
-'''
+
 
 plt.show()

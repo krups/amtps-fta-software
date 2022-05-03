@@ -4,6 +4,8 @@
 // and interpret in flight telemetry from the capsule, display on OLED 
 // and log to SD card
 
+// https://medium.com/@benjaminmbrown/real-time-data-visualization-with-d3-crossfilter-and-websockets-in-python-tutorial-dba5255e7f0e
+
 #include <SPI.h>
 #include <Wire.h>
 #include <U8g2lib.h>
@@ -336,8 +338,8 @@ void RYLR896::thread( void *pvParameters )
               dataPos++;
             }
             
-            SERIAL.print("dataPos is ");
-            SERIAL.println(dataPos);
+            //SERIAL.print("dataPos is ");
+            //SERIAL.println(dataPos);
             
             // assume that data coming from the capsule 
             // is a specific data structure for now
@@ -372,9 +374,18 @@ void RYLR896::thread( void *pvParameters )
             String barpstr = String(rxtlm.barp);
             String tmpstr = String(rxtlm.tmp);
             String tcstr = "";
+            String nanstr = "nan";
+            
+            if( latstr.compareTo(nanstr) == 0 ){
+              latstr = "\"nan\"";
+            }
+            
             for( int i=0; i<NUM_TC_CHANNELS; i++ ){
               String istr = String(i+1);
               String tstr = String(rxtlm.tc.data[i]);
+              if( tstr.compareTo("nan")==0 ){
+                tstr = "'nan'";
+              }
               tcstr += "\"tc" + istr + "\":" + tstr;
               if( i < NUM_TC_CHANNELS-1 ){
                 tcstr += ",";
@@ -384,6 +395,9 @@ void RYLR896::thread( void *pvParameters )
             for( int i=0; i<NUM_PRS_CHANNELS; i++ ){
               String istr = String(i+1);
               String pstr = String(rxtlm.prs.data[i]);
+              if( pstr.compareTo("nan")==0 ){
+                pstr = "'nan'";
+              }
               prstr += "\"prs" + istr + "\":" + pstr;
               if( i < NUM_PRS_CHANNELS-1 ){
                 prstr += ",";
