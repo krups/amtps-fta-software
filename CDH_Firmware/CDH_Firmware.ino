@@ -5,6 +5,7 @@
  * Matt Ruffner, University of Kentucky Fall 2021
  */
 
+#include <float.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_I2CDevice.h>
@@ -781,6 +782,8 @@ static void logThread( void *pvParameters )
   nmea::RmcData rmcData;
   bar_t barData;
   File logfile;
+  uint8_t sd_buf[sizeof(tc_t)+ sizeof(prs_t) + sizeof(nmea::GgaData) + 
+                 sizeof(nmea::RmcData) + sizeof(bar_t)];
   
   #ifdef DEBUG_LOG
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -876,52 +879,33 @@ static void logThread( void *pvParameters )
     Now write any new data received above to the SD card
     HOPEFULLY  no need for mutex since this thread is the only one using the SPI port
     *********************/
-    
-    // open last log file for all telem (single log file configuration)
-    logfile = SD.open(filenames[NUM_LOG_FILES-1], FILE_WRITE);
-    // logfile no good
-    if( ! logfile ) {
-      #if DEBUG
-      if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-        Serial.print("ERROR: sd logging thread couldn't open logfile for writing: ");
-        Serial.println(filenames[0]);
-        xSemaphoreGive( dbSem );
-      }
-      #endif
-    }
-      
-    // LOGFILE OPEN!
-    // log in CSV format for now because we are lazy
+
+    // Build message to write to SD
+    int buf_offset = 0;
     for( int i=0; i<numToLog; i++ ){
-    
+
       // tc / heat flux
       if( toLog[i] == LOGID_TMP ){
-        logfile.print(tmpData.t);
-        logfile.print(", ");
-        logfile.print(LOGID_TMP);
-        logfile.print(", ");
+        int logid_tmp = LOGID_TMP;
+        buf_offset += sprintf(sd_buf,"%lu, %d, ", tmpData.t, logid_tmp);
         for( int j=0; j<NUM_TC_CHANNELS; j++ ){
-          logfile.print(tmpData.data[j]);
-          if( j<NUM_TC_CHANNELS-1 ){
-            logfile.print(", ");
+          if(j < NUM_TC_CHANNELS - 1){
+            buf_offset += sprintf(sd_buf+buf_offset, "%g.*, ", FLT_MANT_DIG, tmpData.data[j]);
           } else {
-            logfile.println();
+            buf_offset += sprintf(sd_buf+buf_offset, "%g.*\n", FLT_MANT_DIG, tmpData.data[j]);
           }
         }
       }
       
       // pressure
       else if( toLog[i] == LOGID_PRS ){
-        logfile.print(prsData.t);
-        logfile.print(", ");
-        logfile.print(LOGID_PRS);
-        logfile.print(", ");
+        int logid_prs = LOGID_PRS;
+        buf_offset += sprintf(sd_buf,"%lu, %d, ", prsData.t, logid_prs);
         for( int j=0; j<NUM_PRS_CHANNELS; j++ ){
-          logfile.print(prsData.data[j]);
-          if( j<NUM_PRS_CHANNELS-1 ){
-            logfile.print(", ");
+          if(j < NUM_PRS_CHANNELS - 1){
+            buf_offset += sprintf(sd_buf+buf_offset, "%g.*, ", FLT_MANT_DIG, prsData.data[j]);
           } else {
-            logfile.println();
+            buf_offset += sprintf(sd_buf+buf_offset, "%g.*\n", FLT_MANT_DIG, prsData.data[j]);
           }
         }
       }
@@ -957,6 +941,23 @@ static void logThread( void *pvParameters )
         // errrrrr
       }
     }
+
+    // open last log file for all telem (single log file configuration)
+    logfile = SD.open(filenames[NUM_LOG_FILES-1], FILE_WRITE);
+    // logfile no good
+    if( ! logfile ) {
+      #if DEBUG
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        Serial.print("ERROR: sd logging thread couldn't open logfile for writing: ");
+        Serial.println(filenames[0]);
+        xSemaphoreGive( dbSem );
+      }
+      #endif
+    }
+      
+    // LOGFILE OPEN!
+    // Write data to SD
+    // logfile.write(buf, len); 
     
     // done writing to this file
     logfile.close();
