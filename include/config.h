@@ -33,16 +33,23 @@
 #define CDH_LOGBUFFERSIZE 10000
 
 
-// TODO: improve logfile system, should be local to boards not here
-#define NUM_LOG_FILES         1
-#define LOGFILE0              "tlm00.csv"
+// the logfilename to use in the format [A-Z]{3}[0-9]{2}.CSV
+// see https://regex101.com/
+#define LOGFILE_NAME              "LG000.DAT"
+#define LOGFILE_NAME_LENGTH 10 // including null terminator
 
-#define LOGID_TMP             0
-#define LOGID_PRS             1
-#define LOGID_GGA             2
-#define LOGID_RMC             3
-#define LOGID_BAR             4
-#define LOGID_ACC             5
-#define LOGID_IMU             6
+#define LOGBUF_HEADER_SIZE 2048
+
+// log buffer size in bytes (how many to accumulate before a write)
+#define LOGBUF_BLOCK_SIZE         2048              // 32768 / 32
+#define LOGBUF_FULL_SIZE    LOGBUF_BLOCK_SIZE - 512 // compressed iridium packet gauranteed to fit
+
+
+#define ERR_BOOT              0
+#define ERR_2                 1
+#define ERR_3                 2
+#define ERR_4                 3
+#define ERR_SD_BUSY           -1
+#define OK                    123
 
 #endif

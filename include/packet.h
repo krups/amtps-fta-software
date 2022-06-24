@@ -10,6 +10,7 @@
 #define PTYPE_TMP 5
 #define PTYPE_PRS 6
 #define PTYPE_TLM 7
+#define PTYPE_BAR 8
 
 // type PTYPE_ACC
 struct acc_t {
@@ -42,6 +43,24 @@ struct bar_t {
   float alt;
   float tmp;
 }; 
+
+struct rmc_t {
+  uint32_t t; // microprocessor time in ms
+  uint16_t time[4]; // hh:mm:ss:us GPS time
+  float lat;
+  float lon;
+  float speed;
+  float course;
+};
+
+struct gga_t {
+  uint32_t t;
+  uint16_t time[4];
+  float lat;
+  float lon;
+  float hdop;
+  float alt;
+};
 
 // type PTYPE_TELEM
 struct tlm_t {
