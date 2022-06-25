@@ -14,6 +14,7 @@
 #include <ArduinoNmeaParser.h>
 #include <FreeRTOS_SAMD51.h>
 #include <SerialTransfer.h>
+#include <SerialCommands.h>
 #include <IridiumSBD.h>
 #include <semphr.h>
 #include <SD.h>
@@ -26,13 +27,15 @@
 #ifdef DEBUG
   #define DEBUG_GPS 1 // print raw gga to serial 
   //#define DEBUG_QUEUE 1 // print info on log queue operations
+  //#define DEBUG_RAD_VERBOSE 1
   #define DEBUG_VERBOSE 1
   #define DEBUG_BARO 1
   #define DEBUG_IRD 1
   #define DEBUG_LOG 1
   #define DEBUG_PAR 1
   #define DEBUG_RAD 1
-  #define DEBUG_TPMS_TRANSFER
+  #define DEBUG_DUMP 1
+  #define DEBUG_TPMS_TRANSFER 1
 #endif
 
 bool sendPackets = 0;
@@ -118,6 +121,7 @@ char filename[LOGFILE_NAME_LENGTH] = LOGFILE_NAME;
 #define SERIAL_GPS  Serial3 // to gps
 #define SERIAL_IRD  Serial2 // to iridium modem
 #define SERIAL_LOR  Serial4 // to telemetry radio
+#define DDSERIAL    Serial // for data dump thread
 
 // Serial transfer object for receiving data from TPM processor
 SerialTransfer myTransfer;
@@ -136,6 +140,7 @@ TaskHandle_t Handle_parTask; // parachute deployment task
 TaskHandle_t Handle_barTask; // barometric sensor task
 TaskHandle_t Handle_radTask; // telem radio task handle
 TaskHandle_t Handle_monitorTask; // debug running task stats over uart task
+TaskHandle_t Handle_dumpTask; // data transfer over serial task
 
 // freeRTOS queues
 // QueueHandle_t qTmpData; // temperature or heat flux data to be logged
@@ -251,6 +256,124 @@ void logStruct(uint8_t type, char* data, size_t size)
 
     xSemaphoreGive( wbufSem );
   }
+}
+
+void initSD(SerialCommands* sender)
+{
+	// list files on SD card
+	// sender->GetSerial()->print("Initializing SD card...");
+  if (!SD.begin(PIN_SD_CS)) {
+    #if DEBUG
+    sender->GetSerial()->println("initialization failed. Things to check:");
+    sender->GetSerial()->println("1. is a card inserted?");
+    sender->GetSerial()->println("2. is your wiring correct?");
+    sender->GetSerial()->println("3. did you change the chipSelect pin to match your shield or module?");
+    sender->GetSerial()->println("Note: press reset or reopen this serial monitor after fixing your issue!");
+    #endif
+    while (true){
+      ledError(0);
+      myDelayMs(500);
+      ledError(-1);
+      myDelayMs(500);
+    }
+  }
+}
+
+// remove files on SD card
+void cmd_rm(SerialCommands* sender)
+{
+  initSD(sender);
+  File root = SD.open("/");
+  clearFiles(sender, root);
+  root.close();
+  sender->GetSerial()->println();
+}
+
+// list files on SD card
+void cmd_ls(SerialCommands* sender)
+{
+  initSD(sender);
+  File root = SD.open("/");
+  printDirectory(sender, root, 0);
+  root.close();
+  sender->GetSerial()->println();
+}
+
+void cmd_dump(SerialCommands* sender)
+{
+	//Note: Every call to Next moves the pointer to next parameter
+
+	char* file_str = sender->Next();
+	if (file_str == NULL)
+	{
+		sender->GetSerial()->println("Need filename as argument");
+		return;
+	}
+	
+	initSD(sender);
+  
+  File dataFile = SD.open(file_str);
+  if (dataFile) {
+    while (dataFile.available()) {
+      sender->GetSerial()->write(dataFile.read());
+    }
+    dataFile.close();
+  } else {
+    sender->GetSerial()->print("error opening ");
+    sender->GetSerial()->println(file_str);
+  }
+  sender->GetSerial()->println();
+}
+
+void clearFiles(SerialCommands* sender, File dir) {
+
+  while (true) {
+    File entry =  dir.openNextFile();
+    if (! entry) {
+      // no more files
+      break;
+    }
+    if (entry.isDirectory()) {
+      clearFiles(sender, entry);
+    } else {
+      if ( strcmp(entry.name(), "CONFIG.TXT") != 0){
+        SD.remove(entry.name());
+      }
+    }
+  }
+}
+
+
+void printDirectory(SerialCommands* sender, File dir, int numTabs) {
+
+  while (true) {
+    File entry =  dir.openNextFile();
+    if (! entry) {
+      // no more files
+      break;
+    }
+    for (uint8_t i = 0; i < numTabs; i++) {
+      sender->GetSerial()->print('\t');
+    }
+    sender->GetSerial()->print(entry.name());
+    if (entry.isDirectory()) {
+      sender->GetSerial()->println("/");
+      printDirectory(sender, entry, numTabs + 1);
+    } else {
+      // files have sizes, directories do not
+      sender->GetSerial()->print("\t\t");
+      sender->GetSerial()->println(entry.size(), DEC);
+    }
+    entry.close();
+  }
+}
+
+//This is the default handler, and gets called when no other command matches. 
+void cmd_unrecognized(SerialCommands* sender, const char* cmd)
+{
+  sender->GetSerial()->print("Unrecognized command [");
+  sender->GetSerial()->print(cmd);
+  sender->GetSerial()->println("]");
 }
 
 void onRmcUpdate(nmea::RmcData const rmc)
@@ -690,10 +813,10 @@ static void tpmThread( void *pvParameters )
   
   while(1) {
     
-    myDelayMs(10);
+    //myDelayMs(200);
     
     int result = 0;
-    
+
     // acquire lock on serial port to TPM board
     if ( xSemaphoreTake( tpmSerSem, ( TickType_t ) 100 ) == pdTRUE ) {
       
@@ -718,15 +841,43 @@ static void tpmThread( void *pvParameters )
         if( type == PTYPE_TMP ){
           newTmp = true;
           recSize = myTransfer.rxObj(tcData, recSize);
+
+          #ifdef DEBUG_TPMS_TRANSFER
+          if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+            Serial.println("TPM:  got tc data from TPMS processor");
+            xSemaphoreGive( dbSem );
+          }
+          #endif
         } 
         else if( type == PTYPE_PRS ){
           newPrs = true;
           recSize = myTransfer.rxObj(prsData, recSize);
+
+          #ifdef DEBUG_TPMS_TRANSFER
+          if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+            Serial.println("TPM:  got prs data from TPMS processor");
+            xSemaphoreGive( dbSem );
+          }
+          #endif
         }
         else {
           // problem!!!
           result = -1;
+
+           #ifdef DEBUG_TPMS_TRANSFER
+          if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+            Serial.println("TPM:  PROBLEM");
+            xSemaphoreGive( dbSem );
+          }
+          #endif
         }
+      } else {
+        //  #ifdef DEBUG_TPMS_TRANSFER
+        //   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        //     Serial.println("TPM:  transfer not available");
+        //     xSemaphoreGive( dbSem );
+        //   }
+        //   #endif
       }
       xSemaphoreGive( tpmSerSem );
     }
@@ -738,12 +889,26 @@ static void tpmThread( void *pvParameters )
       // new temperature data received over serial, put it in a log buffer
       logStruct(PTYPE_TMP, (char*)(&tcData), sizeof(tc_t));
       newTmp = false;  
+
+      #ifdef DEBUG
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+        SERIAL.println("TPM: written to  tc logfile: ");
+        xSemaphoreGive( dbSem );
+      }
+      #endif
     }
     
     if( newPrs ){
       // new pressure data receive over serial, put it in a log file
       logStruct(PTYPE_PRS, (char*)(&prsData), sizeof(prs_t));
       newPrs = false; 
+
+      #ifdef DEBUG
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
+        SERIAL.println("TPM: wrote to prs logfile");
+        xSemaphoreGive( dbSem );
+      }
+      #endif
     }
     
     if( result == -1 ){
@@ -991,7 +1156,7 @@ static void parThread( void *pvParameters )
   while(1) {
     // peek at gga and pressure queues to see if activation criteria have been met
     
-    myDelayMs(50);
+    myDelayMs(1000);
     
     if (deployed) continue;
     
@@ -1479,6 +1644,42 @@ static void radThread( void *pvParameters )
 }
 
 
+/*********************************************
+ * /*********************************************
+ * /*********************************************
+ * DATA DUMP THREAD
+ * */
+char serial_command_buffer_[32];
+SerialCommands serial_commands_(&DDSERIAL, serial_command_buffer_, sizeof(serial_command_buffer_), "\r\n", " ");
+SerialCommand cmd_ls_("ls", cmd_ls);
+SerialCommand cmd_dump_("dump", cmd_dump);
+SerialCommand cmd_rm_("rm", cmd_rm);
+
+static void dumpThread( void *pvParameters )
+{
+  #ifdef DEBUG_DUMP
+  if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+    Serial.println("Data dump thread started");
+    xSemaphoreGive( dbSem );
+  }
+  #endif
+  
+  serial_commands_.SetDefaultHandler(cmd_unrecognized);
+	serial_commands_.AddCommand(&cmd_ls_);
+	serial_commands_.AddCommand(&cmd_rm_);
+	serial_commands_.AddCommand(&cmd_dump_);
+  
+  while (1) {
+    serial_commands_.ReadSerial();
+    if( digitalRead(PC_BOOT_PIN) == LOW ){
+      myDelayMs(1000);
+      if( digitalRead(PC_BOOT_PIN) == LOW )
+        NVIC_SystemReset();
+    }
+  }
+
+  vTaskDelete( NULL ); 
+}
 
 
 /**********************************************************************************/
@@ -1502,9 +1703,9 @@ void setup() {
   delay(10);
   SERIAL_TPM.begin(TPM_SERIAL_BAUD); // init serial to tpm subsystem
   delay(10);
-  SERIAL_GPS.begin(9600); // init gps serial
+  SERIAL_GPS.begin(115200); // init gps serial
   delay(10);
-  SERIAL_IRD.begin(9600); // init iridium serial
+  SERIAL_IRD.begin(19200); // init iridium serial
   delay(10);
   SERIAL_LOR.begin(115200); // init LORA telemetry radio serial
   
@@ -1520,6 +1721,14 @@ void setup() {
   // setup reliable serial datagram between CDH and TPM processors
   //myTransfer.begin(SERIAL_TPM, false, SERIAL, 500);
   myTransfer.begin(SERIAL_TPM);
+
+  // setup neopixel
+  led.begin();
+  led.setPixelColor(0, led.Color(0,150,0));
+  led.show();
+
+  // for sd log dump mode
+  pinMode(PC_BOOT_PIN, INPUT_PULLUP);
   
   // reset pin for lora radio
   pinMode(PIN_LORA_RST, OUTPUT);
@@ -1617,23 +1826,49 @@ void setup() {
   #ifdef DEBUG
   SERIAL.println("Created semaphores...");
   #endif
-  
+
   /**************
   * CREATE TASKS
   **************/
-  xTaskCreate(tpmThread, "TPM Communication", 512, NULL, tskIDLE_PRIORITY, &Handle_tpmTask);
-  xTaskCreate(logThread, "SD Logging", 1024, NULL, tskIDLE_PRIORITY, &Handle_logTask);
-  xTaskCreate(gpsThread, "GPS Reception", 512, NULL, tskIDLE_PRIORITY, &Handle_gpsTask);
-  xTaskCreate(irdThread, "Iridium thread", 512, NULL, tskIDLE_PRIORITY, &Handle_irdTask);
-  xTaskCreate(parThread, "Parachute Deployment", 512, NULL, tskIDLE_PRIORITY+2, &Handle_parTask);
-  xTaskCreate(barThread, "Capsule internals", 512, NULL, tskIDLE_PRIORITY, &Handle_barTask);
-  xTaskCreate(radThread, "Telem radio", 1000, NULL, tskIDLE_PRIORITY, &Handle_radTask);
-  //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 4, &Handle_monitorTask);
+  bool pcdump = false;
   
+  if( digitalRead(PC_BOOT_PIN) == LOW ){
+    bool stable = true;
+    for( int i=0; i<10; i++ ){
+      if( digitalRead(PC_BOOT_PIN) == HIGH ){
+        stable = false;
+        break;
+      }
+      delay(10);
+    }
+    if( stable ){
+      pcdump = true;
+      ledOk();
+    }
+  }
+  // if button was held down during boot, only start the data offload thread
+  if( pcdump ){
+    ledError(-1); //white
+    xTaskCreate(dumpThread, "Data dump", 1024, NULL, tskIDLE_PRIORITY + 2, &Handle_dumpTask);
+  } 
+  // otherwise start mission threads
+  else {
+    xTaskCreate(logThread, "SD Logging", 1024, NULL, tskIDLE_PRIORITY, &Handle_logTask);
+    //xTaskCreate(gpsThread, "GPS Reception", 512, NULL, tskIDLE_PRIORITY, &Handle_gpsTask);
+    //xTaskCreate(irdThread, "Iridium thread", 512, NULL, tskIDLE_PRIORITY, &Handle_irdTask);
+    //xTaskCreate(parThread, "Parachute Deployment", 512, NULL, tskIDLE_PRIORITY, &Handle_parTask);
+    //xTaskCreate(barThread, "Capsule internals", 512, NULL, tskIDLE_PRIORITY, &Handle_barTask);
+    //xTaskCreate(radThread, "Telem radio", 1000, NULL, tskIDLE_PRIORITY, &Handle_radTask);
+    xTaskCreate(tpmThread, "TPM Communication", 1024, NULL, tskIDLE_PRIORITY, &Handle_tpmTask);
+
+    //xTaskCreate(taskMonitor, "Task Monitor", 256, NULL, tskIDLE_PRIORITY + 4, &Handle_monitorTask);
+    
+    // signal to the TPM subsystem to start the task scheduler so that xTaskGetTickCount() is 
+    // consistent between the two
+    digitalWrite(PIN_TPM_SCHEDULER_CTRL, HIGH);
+  }
+
   // Start the RTOS, this function will never return and will schedule the tasks.
-  // signal to the TPM subsystem to start the task scheduler so that xTaskGetTickCount() is 
-  // consistent between the two
-  digitalWrite(PIN_TPM_SCHEDULER_CTRL, HIGH);
   vTaskStartScheduler();
   
 
