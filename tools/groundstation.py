@@ -88,8 +88,8 @@ def updatePlots(it):
   if args.plotprs:
     pass
     
-
-ani = FuncAnimation(fig_tc, updatePlots, 1000)
+if args.plottc or args.plotprs
+  ani = FuncAnimation(fig_tc, updatePlots, 1000)
 
 
 

@@ -8,7 +8,7 @@
 
 #include <SPI.h>
 #include <Wire.h>
-#include <U8g2lib.h>
+//#include <U8g2lib.h>
 #include <Adafruit_I2CDevice.h>
 #include <Adafruit_I2CRegister.h>
 #include <Adafruit_NeoPixel.h>

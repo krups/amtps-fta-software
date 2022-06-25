@@ -22,17 +22,17 @@
 #include "wiring_private.h"
 
 
-//#define DEBUG 1 // usb serial debug switch
+#define DEBUG 1 // usb serial debug switch
 #ifdef DEBUG
-  //#define DEBUG_GPS 1 // print raw gga to serial 
+  #define DEBUG_GPS 1 // print raw gga to serial 
   //#define DEBUG_QUEUE 1 // print info on log queue operations
-  //#define DEBUG_VERBOSE 1
-  //#define DEBUG_BARO 1
+  #define DEBUG_VERBOSE 1
+  #define DEBUG_BARO 1
   #define DEBUG_IRD 1
-  //#define DEBUG_LOG 1
+  #define DEBUG_LOG 1
   #define DEBUG_PAR 1
   #define DEBUG_RAD 1
-  //#define DEBUG_TPMS_TRANSFER
+  #define DEBUG_TPMS_TRANSFER
 #endif
 
 bool sendPackets = 0;
@@ -106,6 +106,11 @@ void SERCOM0_3_Handler()
 
 // global logfile name
 char filename[LOGFILE_NAME_LENGTH] = LOGFILE_NAME;
+
+
+// include here to things are already defined
+#include "include/sample_datfile.h"
+
 
 // debug serial
 #define SERIAL      Serial  // debug serial (USB) all uses should be conditional on DEBUG define
@@ -428,9 +433,9 @@ static void barThread( void *pvParameters )
     
     #ifdef DEBUG_BARO
     if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-      Serial.print("pressure = "); Serial.print(sensorData.prs); Serial.println(" hPa");
-      Serial.print("altitude = "); Serial.print(sensorData.alt); Serial.println(" m");
-      Serial.print("temperature = "); Serial.print(sensorData.tmp); Serial.println(" C");
+      Serial.print("pressure = "); Serial.print(data.prs); Serial.println(" hPa");
+      Serial.print("altitude = "); Serial.print(data.alt); Serial.println(" m");
+      Serial.print("temperature = "); Serial.print(data.tmp); Serial.println(" C");
       
       xSemaphoreGive( dbSem );
     }
@@ -971,9 +976,10 @@ static void logThread( void *pvParameters )
 static void parThread( void *pvParameters )
 {
   prs_t prsData;
-  nmea::GgaData ggaData;
+  gga_t ggaData;
   float alt=1.3e6, prs=0;
   bool deployed = false;
+  int temp = 0;
 
   #ifdef DEBUG_PAR
   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -990,11 +996,27 @@ static void parThread( void *pvParameters )
     if (deployed) continue;
     
     // PRESSURE
-    // TODO: use sample logfile function to grab most recent pressure data
-    //       and compare againtst activation criteria
-    
+    if( ( temp = sample_datfile(PTYPE_PRS, 1, (unsigned char *)(&prsData)) ) != ERR_SD_BUSY) {
+      //bytesRead = temp;
+      #ifdef DEBUG_PAR
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        Serial.println("PAR: read pressure data from logfile");
+        xSemaphoreGive( dbSem );
+      }
+      #endif
+    }
+        
     // GPS
     // aslo need to compare system time and GPS altiture
+    if( ( temp = sample_datfile(PTYPE_GGA, 1, (unsigned char *)(&ggaData)) ) != ERR_SD_BUSY) {
+      //bytesRead = temp;
+      #ifdef DEBUG_PAR
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        Serial.println("PAR: read GPS data from logfile");
+        xSemaphoreGive( dbSem );
+      }
+      #endif
+    }
     
     //if( ( alt <= ALT_THRESH ) && ( prs >= PRS_THRESH ) ){ // DEPLOYYY!
     if( ( prs >= PRS_THRESH ) ){
@@ -1043,9 +1065,10 @@ static void radThread( void *pvParameters )
 {
 
   unsigned long lastSendTime = 0;
+  int temp = 0;
   tlm_t dataOut;
-  nmea::GgaData ggaData;
-  nmea::RmcData rmcData;
+  gga_t ggaData;
+  rmc_t rmcData;
   tc_t tmpData;
   prs_t prsData;
   bar_t barData; 
@@ -1151,11 +1174,81 @@ static void radThread( void *pvParameters )
     }
     
     if( xTaskGetTickCount() - lastSendTime > TLM_SEND_PERIOD && state == 7){
+
+      if( ( temp = sample_datfile(PTYPE_GGA, 1, (unsigned char *)(&ggaData)) ) != ERR_SD_BUSY) {
+        //bytesRead = temp;
+        #ifdef DEBUG_RAD
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          Serial.println("RAD: read GGA GPS data from logfile");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+      }
+
+      if( ( temp = sample_datfile(PTYPE_RMC, 1, (unsigned char *)(&rmcData)) ) != ERR_SD_BUSY) {
+        //bytesRead = temp;
+        #ifdef DEBUG_RAD
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          Serial.println("RAD: read RMC GPS data from logfile");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+      }     
       
-      // TODO: fill dataOut with the most recent telemtry from sampleLogfile function
-      
+      if( ( temp = sample_datfile(PTYPE_TMP, 1, (unsigned char *)(&tmpData)) ) != ERR_SD_BUSY) {
+        //bytesRead = temp;
+        #ifdef DEBUG_RAD
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          Serial.println("RAD: read TC data from logfile");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+      }
+
+      if( ( temp = sample_datfile(PTYPE_PRS, 1, (unsigned char *)(&prsData)) ) != ERR_SD_BUSY) {
+        //bytesRead = temp;
+        #ifdef DEBUG_RAD
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          Serial.println("RAD: read Pressure data from logfile");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+      }
+
+      if( ( temp = sample_datfile(PTYPE_BAR, 1, (unsigned char *)(&barData)) ) != ERR_SD_BUSY) {
+        //bytesRead = temp;
+        #ifdef DEBUG_RAD
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          Serial.println("RAD: read barometer data from logfile");
+          xSemaphoreGive( dbSem );
+        }
+        #endif
+      }
+
+      //
+      // FILL STRUCT TO SEND TO GROUNDSTATION
+      // copy in baseline telemetry
       dataOut.t = xTaskGetTickCount(); 
-      
+      dataOut.lat = ggaData.lat;
+      dataOut.lon = ggaData.lon;
+      dataOut.vel = rmcData.speed;
+      dataOut.alt_gps = ggaData.alt;
+      dataOut.alt_bar = barData.alt;
+      dataOut.barp = barData.prs;
+      dataOut.tmp = barData.tmp;
+      dataOut.bat = 3.30 * (analogRead(PIN_VBAT) / 1023.0);
+      dataOut.irsig = irSig;
+      // copy in parachute status
+      if ( xSemaphoreTake( depSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        dataOut.pardep = globalDeploy;
+        xSemaphoreGive( depSem );
+      }
+      // copy tc and pressure data in
+      memcpy(&(dataOut.tc), &tmpData, sizeof(tc_t));
+      memcpy(&(dataOut.prs), &prsData, sizeof(prs_t));
+
+
+      // START SENDING 
       const int dataSize = sizeof(tlm_t);
       sprintf(sbuf, "AT+SEND=2,%d,", dataSize); // where 2 is the address
       int pre = strlen(sbuf);

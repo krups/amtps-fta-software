@@ -141,7 +141,7 @@ void clearFiles(SerialCommands* sender, File dir) {
     if (entry.isDirectory()) {
       clearFiles(sender, entry);
     } else {
-      if ( strcmp(entry.name(), "CONFIG.TXT") != ){
+      if ( strcmp(entry.name(), "CONFIG.TXT") != 0){
         SD.remove(entry.name());
       }
     }
@@ -412,7 +412,7 @@ static void logThread( void *pvParameters )
         for( int i=0; i<accBufferLoc; i++ ){ 
           logfile.print(accData[i].t);
           logfile.print(", ");
-          logfile.print(LOGID_ACC);
+          logfile.print(PTYPE_ACC);
           logfile.print(", ");
           logfile.print(accData[i].data[0]);
           logfile.print(", ");
@@ -431,7 +431,7 @@ static void logThread( void *pvParameters )
         for( int i=0; i<imuBufferLoc; i++ ){
           logfile.print(imuData[i].t);
           logfile.print(", ");
-          logfile.print(LOGID_IMU);
+          logfile.print(PTYPE_IMU);
           logfile.print(", ");
           for( int j=0; j<NUM_IMU_CHANNELS; j++ ){
             logfile.print(imuData[i].data[j]);
