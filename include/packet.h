@@ -1,6 +1,8 @@
 #ifndef PACKET_H
 #define PACKET_H
 
+#include "config.h"
+
 // logging packet structure
 
 #define PTYPE_GGA 1 // nmea::GgaData
@@ -14,31 +16,31 @@
 
 // type PTYPE_ACC
 struct acc_t {
-  unsigned long t;
+  uint32_t t;
   float data[3];
 };
 
 // type PTYPE_IMU
 struct imu_t {
-  unsigned long t;
+  uint32_t t;
   float data[6];
 };
 
 // type PTYPE_TMP
 struct tc_t {
-  unsigned long t;
+  uint32_t t;
   float data[NUM_TC_CHANNELS];
 };
 
 // type PTYPE_PRS
 struct prs_t {
-  unsigned long t;
+  uint32_t t;
   float data[NUM_PRS_CHANNELS];
 };
 
 //type PTYPE_BAR
 struct bar_t {
-  unsigned long t;
+  uint32_t t;
   float prs;
   float alt;
   float tmp;
@@ -64,7 +66,7 @@ struct gga_t {
 
 // type PTYPE_TELEM
 struct tlm_t {
-  unsigned long t; // system time when packet was sent in # of scheduler ticks (ms)
+  uint32_t t; // system time when packet was sent in # of scheduler ticks (ms)
   float lat;     // gps latitude
   float lon;     // gps longitude
   float vel;     // gps velocity

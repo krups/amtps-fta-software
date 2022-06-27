@@ -228,7 +228,7 @@ void ledOk() {
 void logStruct(uint8_t type, char* data, size_t size)
 {
   // try to write  data to the SD log buffer
-  if ( xSemaphoreTake( wbufSem, ( TickType_t ) 50 ) == pdTRUE ) {
+  if ( xSemaphoreTake( wbufSem, ( TickType_t ) 500 ) == pdTRUE ) {
 
     if( activeLog == 1 ){
       // is this the last data we will put in before considering the
@@ -813,7 +813,7 @@ static void tpmThread( void *pvParameters )
   
   while(1) {
     
-    //myDelayMs(200);
+    myDelayMs(10);
     
     int result = 0;
 
@@ -827,13 +827,6 @@ static void tpmThread( void *pvParameters )
       // followed by the full packet of actual data we want...
       // .....
       if( myTransfer.available() ){
-      
-        #ifdef DEBUG_TPMS_TRANSFER
-        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-          Serial.println("TPM:  got serial transfer for TPMS processor");
-          xSemaphoreGive( dbSem );
-        }
-        #endif
       
         uint16_t recSize = 0;
         uint8_t type; // what type of data is being received
