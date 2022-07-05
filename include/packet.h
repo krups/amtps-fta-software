@@ -5,14 +5,14 @@
 
 // logging packet structure
 
-#define PTYPE_GGA 1 // nmea::GgaData
-#define PTYPE_RMC 2 // nmea::RmcData
-#define PTYPE_ACC 3 
-#define PTYPE_IMU 4
-#define PTYPE_TMP 5
-#define PTYPE_PRS 6
-#define PTYPE_TLM 7
-#define PTYPE_BAR 8
+#define PTYPE_GGA  ((unsigned char)0x01) // nmea::GgaData
+#define PTYPE_RMC  ((unsigned char)0x02) // nmea::RmcData
+#define PTYPE_ACC  ((unsigned char)0x03) 
+#define PTYPE_IMU  ((unsigned char)0x04)
+#define PTYPE_TMP  ((unsigned char)0x05)
+#define PTYPE_PRS  ((unsigned char)0x06)
+#define PTYPE_TLM  ((unsigned char)0x07)
+#define PTYPE_BAR  ((unsigned char)0x08)
 
 // type PTYPE_ACC
 struct acc_t {

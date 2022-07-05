@@ -26,7 +26,7 @@ void printImu(imu_t data, std::ostream &stream);
 //void printSpec(spec_t data, std::ostream &stream);
 void printBar(bar_t data, std::ostream &stream);
 //void printPacket(packet_t data, std::ostream &stream);
-
+void printPrs(prs_t data, std::ostream &stream);
 
 int main(int argc, char** argv)
 {
@@ -95,7 +95,7 @@ int main(int argc, char** argv)
   // only read a start offset if this is a logfile and not a packet
   if( strcmp(argv[1],"log")==0 ){
     // read first two bytes to determine the block size
-    block_size = *(uint16_t*)(&buffer[0]);
+    block_size = (unsigned long)(*(uint16_t*)(&buffer[0]));
   }
 
   if( DEBUG ) std::cout << "block size is " << block_size << std::endl;
@@ -114,6 +114,13 @@ int main(int argc, char** argv)
       std::cout << "  packet ID " << packetIds[j] << " has size " << packetSizes[j] << std::endl;
     } else break;
   }
+
+  std::cout << "\nsizeof(gga_t) = " << sizeof(gga_t) << std::endl;
+  std::cout << "sizeof(rmc_t) = " << sizeof(rmc_t) << std::endl;
+  std::cout << "sizeof(tmp_t) = " << sizeof(tc_t) << std::endl;
+  std::cout << "sizeof(prs_t) = " << sizeof(prs_t) << std::endl;
+  std::cout << "sizeof(tlm_t) = " << sizeof(tlm_t) << std::endl;
+  std::cout << "sizeof(bar_t) = " << sizeof(bar_t) << std::endl << std::endl;
   
   // loop through the file (which is now in memory)
   for( i=block_size; i<length; i++ ){
@@ -167,6 +174,20 @@ int main(int argc, char** argv)
 
       if( DEBUG ) printBar(data, std::cout);
 
+    } else if( buffer[i] == PTYPE_PRS ){
+      offset = sizeof(prs_t);
+      prs_t data;
+      memcpy(&data, &buffer[i+1], offset);
+      i+= offset;
+
+      if( DEBUG ) printPrs(data, std::cout);
+      
+    } else if( buffer[i] == 0 ) {
+      // end of data block, continue past zero section
+      continue;
+    } else {
+      std::cout << "unrecognized packet type (" << (int)(buffer[i]) << ") at position " << i << ", quitting..." << std::endl;
+      return 1;
     }
 
   }
@@ -202,9 +223,19 @@ void printGga(gga_t data, std::ostream &stream) {
 }
 
 void printTc(tc_t data, std::ostream &stream) {
-  stream << "TC: " << ((float)data.t) / (1000.0 / (float)TIME_SCALE) << ", " << ((float)data.data[0])/((float)UNIT_SCALE) << ", " << ((float)data.data[1])/((float)UNIT_SCALE) << ", " <<
-            ((float)data.data[2])/((float)UNIT_SCALE) << ", " << ((float)data.data[3])/((float)UNIT_SCALE) << ", " << ((float)data.data[4])/((float)UNIT_SCALE) << ", " <<
-            ((float)data.data[5])/((float)UNIT_SCALE) <<  std::endl;
+  stream << "TC: " << ((float)data.t) / (1000.0 / (float)TIME_SCALE) << ", "
+	 << ((float)data.data[0])/((float)UNIT_SCALE) << ", "
+	 << ((float)data.data[1])/((float)UNIT_SCALE) << ", "
+	 << ((float)data.data[2])/((float)UNIT_SCALE) << ", "
+	 << ((float)data.data[3])/((float)UNIT_SCALE) << ", "
+	 << ((float)data.data[4])/((float)UNIT_SCALE) << ", "
+	 << ((float)data.data[5])/((float)UNIT_SCALE) << ", "
+	 << ((float)data.data[6])/((float)UNIT_SCALE) << ", "
+	 << ((float)data.data[7])/((float)UNIT_SCALE) << ", "
+	 << ((float)data.data[8])/((float)UNIT_SCALE) << ", "
+	 << ((float)data.data[9])/((float)UNIT_SCALE) << ", "
+	 << ((float)data.data[10])/((float)UNIT_SCALE) << ", "
+	 << ((float)data.data[11])/((float)UNIT_SCALE) << std::endl;
 }
 
 void printAcc(acc_t data, std::ostream &stream) {
@@ -223,3 +254,12 @@ void printBar(bar_t data, std::ostream &stream) {
   stream << "BAR: " << ((float)data.t) / (1000.0 / (float)TIME_SCALE) << ", " << ((float)data.prs)/((float)UNIT_SCALE) << ", " << ((float)data.tmp)/((float)UNIT_SCALE) << ", " << ((float)data.alt)/((float)UNIT_SCALE) << std::endl;
 }
 
+void printPrs(prs_t data, std::ostream &stream) {
+  stream << "PRS: " << ((float)data.t) / 1000.0 << ", ";
+  for( int i=0; i<NUM_PRS_CHANNELS; i++ ){
+    if( i < NUM_PRS_CHANNELS-1 )
+      stream << data.data[i] << ", ";
+    else
+      stream << data.data[i] << std::endl;
+  }
+}

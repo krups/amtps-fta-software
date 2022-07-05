@@ -28,12 +28,12 @@
   #define DEBUG_GPS 1 // print raw gga to serial 
   //#define DEBUG_QUEUE 1 // print info on log queue operations
   //#define DEBUG_RAD_VERBOSE 1
-  #define DEBUG_VERBOSE 1
-  #define DEBUG_BARO 1
-  #define DEBUG_IRD 1
+  //#define DEBUG_VERBOSE 1
+  //#define DEBUG_BARO 1
+  //#define DEBUG_IRD 1
   #define DEBUG_LOG 1
-  #define DEBUG_PAR 1
-  #define DEBUG_RAD 1
+  //#define DEBUG_PAR 1
+  //#define DEBUG_RAD 1
   #define DEBUG_DUMP 1
   #define DEBUG_TPMS_TRANSFER 1
 #endif
@@ -550,7 +550,9 @@ static void barThread( void *pvParameters )
       data.tmp = baro.getTemperature();
       xSemaphoreGive( i2c1Sem );
     }
-  
+
+    data.t = xTaskGetTickCount();
+
     // try to write this data into the current log buffer
     logStruct(PTYPE_BAR, (char*)(&data), sizeof(bar_t));
     
@@ -563,9 +565,9 @@ static void barThread( void *pvParameters )
       xSemaphoreGive( dbSem );
     }
     #endif
-  }
 
-  myDelayMs(1000);
+    myDelayMs(1000);
+  }
 }
 
 
@@ -813,7 +815,7 @@ static void tpmThread( void *pvParameters )
   
   while(1) {
     
-    myDelayMs(10);
+    //myDelayMs(1);
     
     int result = 0;
 
@@ -835,23 +837,11 @@ static void tpmThread( void *pvParameters )
           newTmp = true;
           recSize = myTransfer.rxObj(tcData, recSize);
 
-          #ifdef DEBUG_TPMS_TRANSFER
-          if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-            Serial.println("TPM:  got tc data from TPMS processor");
-            xSemaphoreGive( dbSem );
-          }
-          #endif
         } 
         else if( type == PTYPE_PRS ){
           newPrs = true;
           recSize = myTransfer.rxObj(prsData, recSize);
 
-          #ifdef DEBUG_TPMS_TRANSFER
-          if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-            Serial.println("TPM:  got prs data from TPMS processor");
-            xSemaphoreGive( dbSem );
-          }
-          #endif
         }
         else {
           // problem!!!
@@ -885,7 +875,7 @@ static void tpmThread( void *pvParameters )
 
       #ifdef DEBUG
       if ( xSemaphoreTake( dbSem, ( TickType_t ) 1000 ) == pdTRUE ) {
-        SERIAL.println("TPM: written to  tc logfile: ");
+        SERIAL.println("TPM: wrote to tc logfile: ");
         xSemaphoreGive( dbSem );
       }
       #endif
