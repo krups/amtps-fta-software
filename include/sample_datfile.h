@@ -48,7 +48,7 @@ int sample_datfile(uint8_t ptype, int numToSample, unsigned char *output)
 
   // first open the specified log file and count how many packets of the
   // specified type exist in the file
-  if ( xSemaphoreTake( sdSem, ( TickType_t ) 200 ) == pdTRUE ) {
+  if ( xSemaphoreTake( sdSem, ( TickType_t ) 400 ) == pdTRUE ) {
     // make sure file exists
     if (! SD.exists(filename)) {
       return ERR_SD_BUSY;
@@ -80,7 +80,12 @@ int sample_datfile(uint8_t ptype, int numToSample, unsigned char *output)
       // go until the end of data in this block
       while( (type = logfile.read()) != 0 ){
         // check if its a packet we want to sample
-        if( type == ptype ) numPackets++;
+        if( type == ptype ) {
+          numPackets++;
+          if( numToSample == 1){
+            logfile.seek(fileSize);
+          }
+        }
 
         // calculate number of bytes until next packet
         if     ( type==PTYPE_TMP   ) offset = sizeof (tc_t);
@@ -90,6 +95,7 @@ int sample_datfile(uint8_t ptype, int numToSample, unsigned char *output)
         else if( type==PTYPE_GGA  ) offset = sizeof (gga_t);
         else if( type==PTYPE_RMC  ) offset = sizeof (rmc_t);
         else if( type==PTYPE_BAR  ) offset = sizeof (bar_t);
+        else if( type==PTYPE_PRS  ) offset = sizeof (prs_t);
         //else if( type==PTYPE_PACKET ) offset = sizeof (packet_t);
         else break; // we are lost, break so we seek to next block
 
@@ -151,7 +157,7 @@ int sample_datfile(uint8_t ptype, int numToSample, unsigned char *output)
 
 
   // now re-open the file and
-  if ( xSemaphoreTake( sdSem, ( TickType_t ) 200 ) == pdTRUE ) {
+  if ( xSemaphoreTake( sdSem, ( TickType_t ) 400 ) == pdTRUE ) {
 
     curBlock = 0;
     // open log file and read file info
@@ -180,6 +186,7 @@ int sample_datfile(uint8_t ptype, int numToSample, unsigned char *output)
         else if( type==PTYPE_GGA  ) offset = sizeof (gga_t);
         else if( type==PTYPE_RMC  ) offset = sizeof (rmc_t);
         else if( type==PTYPE_BAR  ) offset = sizeof (bar_t);
+        else if( type==PTYPE_PRS  ) offset = sizeof (prs_t);
         //else if( type==PTYPE_PACKET ) offset = sizeof (packet_t);
         else break; // we are lost, break so we seek to next block
 
@@ -190,7 +197,7 @@ int sample_datfile(uint8_t ptype, int numToSample, unsigned char *output)
         if( (type == ptype) && ( (strideCount == stride) || (numToSample==1 && curPacket==numPackets))){
           strideCount = 0;
           if( numSampled < numToSample ){
-            output[outputPos++] = type;
+            //output[outputPos++] = type;
             bytesRead = logfile.read( &output[outputPos], offset);
             outputPos += offset;
             numSampled++;
@@ -230,7 +237,7 @@ int sample_datfile(uint8_t ptype, int numToSample, unsigned char *output)
 //  #endif
 
   if ( xSemaphoreTake( ledSem, ( TickType_t ) 5 ) == pdTRUE ) {
-    ledError( OK );
+    ledError( 1 );
     xSemaphoreGive( ledSem );
   }
 

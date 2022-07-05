@@ -18,6 +18,7 @@
 #include <SD.h>
 
 //#define DEBUG 1
+#define DEBUG_RAD 1
 //#define PRINT_RX_STATS 1
 
 #include "include/delay_helpers.h" // rtos delay helpers
@@ -37,6 +38,9 @@ SemaphoreHandle_t dbSem; // serial debug logging (Serial)
 #define SCSERIAL Serial
 #define RADIO_SERIAL Serial1
 
+volatile bool newCmdToSend = false;
+volatile unsigned char cmdToSend;
+
 // prototypes for serial commands
 void printDirectory(SerialCommands* sender, File dir, int numTabs);
 
@@ -50,6 +54,8 @@ SerialCommands serial_commands_(&SCSERIAL, serial_command_buffer_, sizeof(serial
 void cmd_send_pdep(SerialCommands* sender)
 {
   sender->GetSerial()->print("sending parachute deploy...");
+  cmdToSend = CMDID_DEPLOY_DROGUE;
+  newCmdToSend = true;
   // do work
 }
 
@@ -57,7 +63,8 @@ void cmd_send_pdep(SerialCommands* sender)
 void cmd_send_pyro(SerialCommands* sender)
 {
   sender->GetSerial()->print("sending pyro cut command...");
-  // do work
+  cmdToSend = CMDID_FIRE_PYRO;
+  newCmdToSend = true;
 }
 
 
@@ -72,7 +79,7 @@ void cmd_help(SerialCommands* sender, const char* cmd)
 SerialCommand cmd_pdep_("D", cmd_send_pdep); // deploy parachute command
 SerialCommand cmd_pyro_("C", cmd_send_pyro); // fire pyro cutters command
 
-
+unsigned long lastSendTime = 0;
 
 /**********************************************************************************
  *  Radio task
@@ -163,6 +170,41 @@ void RYLR896::thread( void *pvParameters )
       state = 6;
     }
   
+    if( newCmdToSend && state == 7){
+      // START SENDING 
+      const int dataSize = sizeof(uint8_t);
+      sprintf(sbuf, "AT+SEND=1,%d,", dataSize); // where 2 is the address
+      int pre = strlen(sbuf);
+         
+      // embed command
+      sbuf[pre] = cmdToSend;
+      
+      sbuf[pre+dataSize] = '\r';
+      sbuf[pre+dataSize+1] = '\n';
+      sbuf[pre+dataSize+2] = 0;
+      
+      
+      #ifdef DEBUG_RAD
+      if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        SERIAL.print("sending radio binary packet of size ");
+        SERIAL.println(pre+dataSize+2);
+        SERIAL.print("actual data was (bytes): ");
+        SERIAL.println(dataSize);
+        //SERIAL.println("DONE");
+        xSemaphoreGive( dbSem );
+      }
+      #endif
+      
+      // send to lora module
+      RADIO_SERIAL.write(sbuf, pre+dataSize+2);
+      //SERIAL_LOR.write(sbuf, pre);
+      
+      // go to state 8 so that we wait for a response
+      state = 8;
+
+      newCmdToSend = false;
+    }
+
     // handle incoming message from LORA radio
     // AT message from module
     bool eol = false;
@@ -273,16 +315,26 @@ void RYLR896::thread( void *pvParameters )
           }
           #endif
           
-          if( state != 7 ){
+          if( state < 7 ){
             state ++;
             if( state == 7 ){
-              #ifdef DEBUG
+              #ifdef DEBUG_RAD
               if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-                SERIAL.print("STATE = 7! successfully configured radio!");
+                SERIAL.println("STATE = 7, successfully configured radio!");
                 xSemaphoreGive( dbSem );
               }
               #endif
+              taskYIELD();
             }
+          } else if( state > 7 ){
+            state = 7;
+            #ifdef DEBUG_RAD
+            if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+              SERIAL.println("STATE was 8, received +OK from a data send operation!");
+              xSemaphoreGive( dbSem );
+            }
+            #endif
+            taskYIELD(); 
           }
           
         } else {

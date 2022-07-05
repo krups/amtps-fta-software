@@ -33,9 +33,9 @@
   //#define DEBUG_IRD 1
   #define DEBUG_LOG 1
   //#define DEBUG_PAR 1
-  //#define DEBUG_RAD 1
+  #define DEBUG_RAD 1
   #define DEBUG_DUMP 1
-  #define DEBUG_TPMS_TRANSFER 1
+  //#define DEBUG_TPMS_TRANSFER 1
 #endif
 
 bool sendPackets = 0;
@@ -590,6 +590,10 @@ static void gpsThread( void *pvParameters )
   while(1) {
     if ( xSemaphoreTake( gpsSerSem, ( TickType_t ) 100 ) == pdTRUE ) {
       while (SERIAL_GPS.available()) {
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          Serial.write(SERIAL_GPS.peek());
+          xSemaphoreGive( dbSem );
+        }
         parser.encode((char)SERIAL_GPS.read());
       }
       xSemaphoreGive( gpsSerSem );
@@ -1291,8 +1295,8 @@ static void radThread( void *pvParameters )
         xSemaphoreGive( dbSem );
       }
       #endif
-      //taskYIELD();
-      myDelayMs(10);
+      taskYIELD();
+      //myDelayMs(10);
     }
     else if( state == 3 ){
       int len = sprintf(sbuf, "AT+NETWORKID=1\r\n");
@@ -1304,8 +1308,8 @@ static void radThread( void *pvParameters )
         xSemaphoreGive( dbSem );
       }
       #endif
-      myDelayMs(10);
-      //taskYIELD();
+      //myDelayMs(10);
+      taskYIELD();
     }
     else if( state == 5 ){
       int len = sprintf(sbuf, "AT+PARAMETER=10,7,1,7\r\n"); // less than 3km
@@ -1317,8 +1321,8 @@ static void radThread( void *pvParameters )
         xSemaphoreGive( dbSem );
       }
       #endif
-      myDelayMs(10);
-      //taskYIELD();
+      //myDelayMs(10);
+      taskYIELD();
     }
     
     if( xTaskGetTickCount() - lastSendTime > TLM_SEND_PERIOD && state == 7){
@@ -1333,15 +1337,15 @@ static void radThread( void *pvParameters )
         #endif
       }
 
-      if( ( temp = sample_datfile(PTYPE_RMC, 1, (unsigned char *)(&rmcData)) ) != ERR_SD_BUSY) {
-        //bytesRead = temp;
-        #ifdef DEBUG_RAD
-        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
-          Serial.println("RAD: read RMC GPS data from logfile");
-          xSemaphoreGive( dbSem );
-        }
-        #endif
-      }     
+      // if( ( temp = sample_datfile(PTYPE_RMC, 1, (unsigned char *)(&rmcData)) ) != ERR_SD_BUSY) {
+      //   //bytesRead = temp;
+      //   #ifdef DEBUG_RAD
+      //   if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+      //     Serial.println("RAD: read RMC GPS data from logfile");
+      //     xSemaphoreGive( dbSem );
+      //   }
+      //   #endif
+      // }     
       
       if( ( temp = sample_datfile(PTYPE_TMP, 1, (unsigned char *)(&tmpData)) ) != ERR_SD_BUSY) {
         //bytesRead = temp;
@@ -1372,6 +1376,16 @@ static void radThread( void *pvParameters )
         }
         #endif
       }
+
+      #ifdef DEBUG_RAD
+        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+          Serial.print("RAD: tc0: ");
+          Serial.print(tmpData.data[0]);
+          Serial.print(", barp: ");
+          Serial.println(barData.prs);
+          xSemaphoreGive( dbSem );
+        }
+      #endif
 
       //
       // FILL STRUCT TO SEND TO GROUNDSTATION
@@ -1559,6 +1573,24 @@ static void radThread( void *pvParameters )
             int snr;
             int addr = -1;
             int datalen = -1;
+            int cc = 0;
+            
+            // find start of data chunk
+            int dataPos = 0;
+            while( dataPos < pos){
+              if( rbuf[dataPos] == ',' ){
+                cc++;
+                if( cc == 2 ){
+                  dataPos++;
+                  break;
+                }
+                  
+              }
+              dataPos++;
+            }
+            
+            //SERIAL.print("dataPos is ");
+            //SERIAL.println(dataPos);
             
             // parse target address
             token = strtok((char *) &rbuf[5], comma);
@@ -1567,10 +1599,6 @@ static void radThread( void *pvParameters )
             // extract data length
             token = strtok(NULL, comma);
             datalen = atoi(token);
-            
-            data = (char *)&rbuf[5];
-            while( *(++data) != ',');
-            while( *(++data) != ',');
             
             // get pointer to start of data 
             //data = strtok(NULL, comma);
@@ -1584,18 +1612,18 @@ static void radThread( void *pvParameters )
             token = strtok(NULL, comma);
             snr = atoi(token);
             
-            
             #ifdef DEBUG
             int pblen = sprintf(printbuf, "Received %d bytes from address %d\n  rssi: %d, snr: %d\n", datalen, addr, rssi, snr);
             if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
               SERIAL.write(printbuf, pblen);
               //SERIAL.write(data, datalen);
+              SERIAL.println((int)rbuf[dataPos]);
               xSemaphoreGive( dbSem );
             }
             #endif
             
             // check what the data was
-            switch (data[0]) {
+            switch ((int)rbuf[dataPos]) {
               case CMDID_DEPLOY_DROGUE:
                 #if DEBUG
                 if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
@@ -1619,7 +1647,7 @@ static void radThread( void *pvParameters )
         }
       }
     } 
-    //taskYIELD();
+    taskYIELD();
     //myDelayMs(100);
   }
   

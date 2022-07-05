@@ -27,7 +27,7 @@
 #define I2CMUX_ADDR (0x70) 
 
 
-#define TLM_SEND_PERIOD   1000 // in scheduler ticks (should be 1ms)
+#define TLM_SEND_PERIOD   5000 // in scheduler ticks (should be 1ms)
 #define RX_TIMEOUT_PERIOD 500  // also in scheduler ticks
 
 #define CDH_LOGBUFFERSIZE 10000
