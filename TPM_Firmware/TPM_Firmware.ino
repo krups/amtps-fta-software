@@ -171,7 +171,7 @@ static void prsThread( void *pvParameters )
       if ( xSemaphoreTake( i2c1Sem, ( TickType_t ) 100 ) == pdTRUE ) {
         select_i2cmux_channel(3);
         ps1.update();
-        select_i2cmux_channel(4);
+        select_i2cmux_channel(2);
         ps2.update();
         select_i2cmux_channel(5);
         ps3.update();

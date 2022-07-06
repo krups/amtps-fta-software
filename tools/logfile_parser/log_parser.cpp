@@ -186,8 +186,10 @@ int main(int argc, char** argv)
       // end of data block, continue past zero section
       continue;
     } else {
-      std::cout << "unrecognized packet type (" << (int)(buffer[i]) << ") at position " << i << ", quitting..." << std::endl;
-      return 1;
+      std::cout << "unrecognized packet type (" << (uint8_t)(buffer[i]) << ") at position " << i;
+      i = ((int)((float)(i) / (float)(block_size)))*block_size + block_size - 1;
+      std::cout << ", seeking to next block (pos " << i+1 << ")..." << std::endl;
+
     }
 
   }

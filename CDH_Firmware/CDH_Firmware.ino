@@ -25,7 +25,7 @@
 
 #define DEBUG 1 // usb serial debug switch
 #ifdef DEBUG
-  #define DEBUG_GPS 1 // print raw gga to serial 
+  //#define DEBUG_GPS 1 // print raw gga to serial
   //#define DEBUG_QUEUE 1 // print info on log queue operations
   //#define DEBUG_RAD_VERBOSE 1
   //#define DEBUG_VERBOSE 1
@@ -35,7 +35,7 @@
   //#define DEBUG_PAR 1
   #define DEBUG_RAD 1
   #define DEBUG_DUMP 1
-  //#define DEBUG_TPMS_TRANSFER 1
+  #define DEBUG_TPMS_TRANSFER 1
 #endif
 
 bool sendPackets = 0;
@@ -590,10 +590,10 @@ static void gpsThread( void *pvParameters )
   while(1) {
     if ( xSemaphoreTake( gpsSerSem, ( TickType_t ) 100 ) == pdTRUE ) {
       while (SERIAL_GPS.available()) {
-        if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
+        /*if ( xSemaphoreTake( dbSem, ( TickType_t ) 100 ) == pdTRUE ) {
           Serial.write(SERIAL_GPS.peek());
           xSemaphoreGive( dbSem );
-        }
+        }*/
         parser.encode((char)SERIAL_GPS.read());
       }
       xSemaphoreGive( gpsSerSem );
@@ -819,7 +819,7 @@ static void tpmThread( void *pvParameters )
   
   while(1) {
     
-    //myDelayMs(1);
+    myDelayMs(1);
     
     int result = 0;
 
@@ -1631,6 +1631,7 @@ static void radThread( void *pvParameters )
                   xSemaphoreGive( dbSem );
                 }
                 #endif
+                co2servo.write(CO2SERVO_POS_ACT);
                 break;
               case CMDID_FIRE_PYRO:
                 #if DEBUG
@@ -1639,6 +1640,7 @@ static void radThread( void *pvParameters )
                   xSemaphoreGive( dbSem );
                 }
                 #endif
+                digitalWrite(PIN_PYROACT, HIGH);
                 break;
             }
             
@@ -1755,6 +1757,7 @@ void setup() {
   
   // pyro power switch
   pinMode(PIN_PYROACT, OUTPUT);
+  digitalWrite(PIN_PYROACT, LOW);
   
   // scheduler control pin to TPM subsystem
   pinMode(PIN_TPM_SCHEDULER_CTRL, OUTPUT);
